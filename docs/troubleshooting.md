@@ -35,10 +35,10 @@ so moving or renaming a bundle changes the ID.
 ## Checking a bundle by hand
 
 ```sh
-B="$HOME/Library/Audio/Plug-Ins/VST3/Dragon ThreeQ.vst3"
-lipo -info "$B/Contents/MacOS/Dragon ThreeQ"        # x86_64 arm64
+B="$HOME/Library/Audio/Plug-Ins/VST3/Dragon 24EQ.vst3"
+lipo -info "$B/Contents/MacOS/Dragon 24EQ"        # x86_64 arm64
 codesign -dv "$B" 2>&1 | grep Signature              # adhoc
-nm -gU "$B/Contents/MacOS/Dragon ThreeQ" | grep -E "GetPluginFactory|clap_entry"
+nm -gU "$B/Contents/MacOS/Dragon 24EQ" | grep -E "GetPluginFactory|clap_entry"
 xattr -l "$B"                                        # no com.apple.quarantine
 ```
 

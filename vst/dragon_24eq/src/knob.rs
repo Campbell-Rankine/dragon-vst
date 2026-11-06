@@ -1,6 +1,8 @@
 //! A rotary knob for nih-plug parameters, drawn with egui.
 //!
 //! Drag up/down to change (hold Shift for fine control), double-click to reset.
+//! Add it with `ui.add_enabled(false, ...)` to grey it out when the parameter
+//! doesn't apply.
 
 use nih_plug::prelude::{Param, ParamSetter};
 use nih_plug_egui::egui::{
@@ -59,8 +61,14 @@ impl<P: Param> Widget for Knob<'_, P> {
             self.setter.set_parameter(self.param, self.param.default_plain_value());
             self.setter.end_set_parameter(self.param);
         } else {
+            // The drag position is accumulated in egui memory rather than read
+            // back from the parameter: stepped parameters (enums) snap, so
+            // small per-frame deltas would otherwise never reach the next step.
+            let drag_id = response.id.with("drag-value");
             if response.drag_started() {
                 self.setter.begin_set_parameter(self.param);
+                let start = self.param.unmodulated_normalized_value();
+                ui.memory_mut(|m| m.data.insert_temp(drag_id, start));
             }
             if response.dragged() {
                 let fine = ui.input(|i| i.modifiers.shift);
@@ -68,7 +76,11 @@ impl<P: Param> Widget for Knob<'_, P> {
                     * DRAG_SPEED
                     * if fine { FINE_FACTOR } else { 1.0 };
                 if delta != 0.0 {
-                    let value = (self.param.unmodulated_normalized_value() + delta).clamp(0.0, 1.0);
+                    let current = ui
+                        .memory(|m| m.data.get_temp::<f32>(drag_id))
+                        .unwrap_or_else(|| self.param.unmodulated_normalized_value());
+                    let value = (current + delta).clamp(0.0, 1.0);
+                    ui.memory_mut(|m| m.data.insert_temp(drag_id, value));
                     self.setter.set_parameter_normalized(self.param, value);
                 }
             }
@@ -83,7 +95,9 @@ impl<P: Param> Widget for Knob<'_, P> {
             let radius = self.diameter / 2.0;
             let norm = self.param.unmodulated_normalized_value();
             let angle = START + SWEEP * norm;
-            let hovered = response.hovered() || response.dragged();
+            let enabled = ui.is_enabled();
+            let hovered = enabled && (response.hovered() || response.dragged());
+            let color = if enabled { self.color } else { Color32::from_gray(80) };
 
             // Label above.
             painter.text(
@@ -91,7 +105,7 @@ impl<P: Param> Widget for Knob<'_, P> {
                 egui::Align2::CENTER_TOP,
                 self.label,
                 egui::FontId::proportional(13.0),
-                Color32::from_gray(200),
+                Color32::from_gray(if enabled { 200 } else { 100 }),
             );
 
             // Body and track.
@@ -106,7 +120,7 @@ impl<P: Param> Widget for Knob<'_, P> {
             if (angle - from).abs() > 1e-3 {
                 painter.add(Shape::line(
                     arc_points(center, radius, from, angle),
-                    Stroke::new(5.0_f32, self.color),
+                    Stroke::new(5.0_f32, color),
                 ));
             }
 
@@ -114,7 +128,7 @@ impl<P: Param> Widget for Knob<'_, P> {
             let dir = vec2(angle.cos(), angle.sin());
             painter.line_segment(
                 [center + dir * (radius * 0.25), center + dir * (radius - 9.0)],
-                Stroke::new(3.0_f32, if hovered { Color32::WHITE } else { self.color }),
+                Stroke::new(3.0_f32, if hovered { Color32::WHITE } else { color }),
             );
 
             // Value below.
@@ -123,7 +137,7 @@ impl<P: Param> Widget for Knob<'_, P> {
                 egui::Align2::CENTER_BOTTOM,
                 self.param.to_string(),
                 egui::FontId::monospace(12.0),
-                if hovered { self.color } else { Color32::from_gray(160) },
+                if hovered { color } else if enabled { Color32::from_gray(160) } else { Color32::from_gray(90) },
             );
         }
 

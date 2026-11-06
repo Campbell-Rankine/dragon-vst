@@ -1,10 +1,10 @@
 [package]
-name = "dragon_threeq"
+name = "dragon_24eq"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "A 3-band EQ"
+description = "A 24-band parametric EQ"
 
 [lib]
 crate-type = ["cdylib", "lib"]

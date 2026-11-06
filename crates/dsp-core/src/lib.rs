@@ -3,9 +3,14 @@
 //! Nothing in this crate may depend on nih-plug, so it can be unit-tested
 //! without a plugin host.
 
+pub mod biquad;
+pub mod eq;
+pub mod matched;
 pub mod svf;
 
-pub use svf::{Svf, SvfCoefs, SvfShape};
+pub use biquad::Biquad;
+pub use eq::{analog_magnitude_db, BandDesign, BandFilter, BandSettings, FilterType, Slope, MAX_SECTIONS};
+pub use svf::{Svf, SvfCoefs};
 
 /// Convert decibels to linear gain. Values at or below -100 dB map to 0.0.
 #[inline]

@@ -3,7 +3,7 @@
 | Doc | What's in it |
 |---|---|
 | [architecture.md](architecture.md) | Workspace layout, how the crates fit together, real-time rules |
-| [dragon_threeq.md](dragon_threeq.md) | The Dragon ThreeQ plugin: parameters, signal flow, editor, IDs |
+| [dragon_24eq.md](dragon_24eq.md) | The Dragon 24EQ plugin: parameters, signal flow, editor, IDs |
 | [dsp.md](dsp.md) | The filter maths in `dsp-core` and how it's tested |
 | [tools.md](tools.md) | `build2lynx.sh`, `clap-smoke`, `xtask`, API docs |
 | [troubleshooting.md](troubleshooting.md) | Plugin-loading problems and how to diagnose them |
@@ -12,7 +12,7 @@
 ## Quick start
 
 ```sh
-./build2lynx.sh dragon_threeq     # test, build, smoke-test, install
+./build2lynx.sh dragon_24eq     # test, build, smoke-test, install
 ```
 
 Then rescan plugins in your host (LYNX: Options > Scan for plugins).
@@ -22,5 +22,5 @@ Then rescan plugins in your host (LYNX: Options > Scan for plugins).
 Generated from the doc comments in the code:
 
 ```sh
-cargo doc --no-deps -p dsp-core -p dragon_threeq -p clap-smoke --open
+cargo doc --no-deps -p dsp-core -p dragon_24eq -p clap-smoke --open
 ```

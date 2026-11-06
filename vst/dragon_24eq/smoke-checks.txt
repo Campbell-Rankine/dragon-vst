@@ -1,0 +1,20 @@
+# Parameter checks run by build2lynx.sh through tools/clap-smoke after bundling.
+# Format: <description> | <clap-smoke options>
+# Expected values come from the analog prototypes (see docs/dsp.md), not from
+# our own output. The input is the same sine on both channels.
+
+bell +12 dB at its centre          | --set "Band 2 Gain=12" --expect-db 12
+low cut 24 dB/oct at the corner    | --set "Band 4 On=On" --set "Band 4 Type=Low Cut" --set "Band 4 Freq=1000" --set "Band 4 Slope=24 dB/oct" --expect-db -3.0103
+low cut 48 dB/oct, 1 oct below     | --set "Band 4 On=On" --set "Band 4 Type=Low Cut" --set "Band 4 Freq=1000" --set "Band 4 Slope=48 dB/oct" --tone 500 --expect-db -48.165 --tol 0.1
+high cut 18 dB/oct, 1 oct above    | --set "Band 4 On=On" --set "Band 4 Type=High Cut" --set "Band 4 Freq=500" --set "Band 4 Slope=18 dB/oct" --expect-db -18.13 --tol 0.1
+band-pass Q 1 at half its freq     | --set "Band 2 Type=Band Pass" --set "Band 2 Freq=2000" --set "Band 2 Q=1" --expect-db -5.12
+tilt shelf is 0 dB at its centre   | --set "Band 2 Type=Tilt Shelf" --set "Band 2 Gain=12" --expect-db 0
+placement Left                     | --set "Band 2 Gain=12" --set "Band 2 Stereo=Left" --expect-left-db 12 --expect-right-db 0
+placement Right                    | --set "Band 2 Gain=12" --set "Band 2 Stereo=Right" --expect-left-db 0 --expect-right-db 12
+placement Mid (L=R input)          | --set "Band 2 Gain=12" --set "Band 2 Stereo=Mid" --expect-db 12
+placement Side (L=R: no side)      | --set "Band 2 Gain=12" --set "Band 2 Stereo=Side" --expect-db 0
+a band switched off does nothing   | --set "Band 2 Gain=12" --set "Band 2 On=Off" --expect-db 0
+output gain -6 dB                  | --set "Output Gain=-6" --expect-db -6
+# Regression: stacked steep high cuts near Nyquist must leave the passband flat
+# (an earlier design added ~+3 dB per band at 1 kHz).
+4 x 96 dB/oct high cuts at 20 kHz  | --set "Band 4 On=On" --set "Band 4 Type=High Cut" --set "Band 4 Slope=96 dB/oct" --set "Band 4 Freq=20000" --set "Band 5 On=On" --set "Band 5 Type=High Cut" --set "Band 5 Slope=96 dB/oct" --set "Band 5 Freq=20000" --set "Band 6 On=On" --set "Band 6 Type=High Cut" --set "Band 6 Slope=96 dB/oct" --set "Band 6 Freq=20000" --set "Band 7 On=On" --set "Band 7 Type=High Cut" --set "Band 7 Slope=96 dB/oct" --set "Band 7 Freq=20000" --expect-db 0 --tol 0.05

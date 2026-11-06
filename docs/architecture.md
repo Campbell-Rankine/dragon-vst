@@ -5,13 +5,13 @@
 ```
 dragon-vst/
 ├── Cargo.toml            workspace; pins nih-plug to one git commit
-├── bundler.toml          display names for bundles (package -> "Dragon ThreeQ")
+├── bundler.toml          display names for bundles (package -> "Dragon 24EQ")
 ├── build2lynx.sh         test + build + smoke-test + install (see tools.md)
 ├── .cargo/config.toml    `cargo xtask` alias
 ├── crates/
 │   └── dsp-core/         host-independent DSP (filters), unit-tested
 ├── vst/
-│   └── dragon_threeq/    the 3-band EQ plugin (nih-plug + egui)
+│   └── dragon_24eq/    the 24-band EQ plugin (nih-plug + egui)
 ├── tools/
 │   └── clap-smoke/       headless CLAP host used as a pre-install check
 ├── xtask/                nih-plug's bundler (`cargo xtask bundle ...`)
@@ -25,9 +25,9 @@ package name. `build2lynx.sh` relies on that.
 
 ```
              ┌──────────────────────────────┐
-  host ────▶ │ vst/dragon_threeq            │
+  host ────▶ │ vst/dragon_24eq            │
  (LYNX,      │  Plugin impl (nih-plug)      │──uses──▶ crates/dsp-core
-  FL, ...)   │  ├─ process(): audio thread  │          (Svf, SvfCoefs)
+  FL, ...)   │  ├─ process(): audio thread  │          (BandDesign, BandFilter)
              │  └─ editor(): egui GUI thread│
              └──────────────────────────────┘
                      ▲  shared via Arc<Params>
@@ -36,9 +36,9 @@ package name. `build2lynx.sh` relies on that.
 ```
 
 - **`dsp-core`** has no dependency on nih-plug. Anything that can be tested
-  without a host (filters, later analyzers and FIR design) goes here.
+  without a host (filter design, later analyzers and FIR design) goes here.
   Other plugins can reuse it.
-- **`vst/dragon_threeq`** is a thin layer that maps parameters to `dsp-core`
+- **`vst/dragon_24eq`** is a thin layer that maps parameters to `dsp-core`
   types, runs them in `process()`, and draws the editor.
 - **Formats:** nih-plug exports each plugin as both **VST3** and **CLAP**
   from the same code (`nih_export_vst3!` / `nih_export_clap!`).
@@ -56,7 +56,8 @@ package name. `build2lynx.sh` relies on that.
   immediately.
 - **Sharing:** parameters are the only shared state. The GUI writes them
   through `ParamSetter`, which tells the host about the change. The audio
-  thread reads `param.smoothed.next()` once per sample.
+  thread advances band smoothers once per 32-sample block
+  (`smoothed.next_step`), and output gain once per sample.
 
 ## Formats, licensing, platform
 

@@ -2,7 +2,7 @@
 # Build, test, bundle, and install a plugin from vst/<name> into the user's
 # VST3 and CLAP plugin folders.
 #
-# Usage: ./build2lynx.sh <vst-dir-name>     e.g. ./build2lynx.sh dragon_threeq
+# Usage: ./build2lynx.sh <vst-dir-name>     e.g. ./build2lynx.sh dragon_24eq
 set -euo pipefail
 
 usage() {
@@ -44,6 +44,23 @@ cargo xtask bundle-universal "$PACKAGE" --release
 
 echo "==> Smoke-testing the CLAP bundle in a headless host"
 cargo run -q -p clap-smoke --release -- "target/bundled/$BUNDLE_NAME.clap"
+
+# Optional per-plugin parameter checks: "<description> | <clap-smoke options>".
+CHECKS="$VST_DIR/smoke-checks.txt"
+if [[ -f "$CHECKS" ]]; then
+    echo "==> Running parameter checks from $CHECKS"
+    while IFS='|' read -r desc opts; do
+        [[ -z "${desc// /}" || "$desc" == \#* ]] && continue
+        eval "set -- $opts"
+        if out="$(cargo run -q -p clap-smoke --release -- "target/bundled/$BUNDLE_NAME.clap" "$@" 2>&1)"; then
+            echo "    ok    ${desc%"${desc##*[! ]}"}"
+        else
+            echo "    FAIL  $desc" >&2
+            echo "$out" >&2
+            exit 1
+        fi
+    done < "$CHECKS"
+fi
 
 install_bundle() {
     local ext="$1" dest="$2"
