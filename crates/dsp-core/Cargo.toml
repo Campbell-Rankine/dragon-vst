@@ -1,0 +1,8 @@
+[package]
+name = "dsp-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-independent DSP building blocks shared by dragon-vst plugins"
+
+[dependencies]

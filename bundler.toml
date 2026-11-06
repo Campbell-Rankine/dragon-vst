@@ -1,0 +1,3 @@
+# Display names used by `cargo xtask bundle`.
+[bad_filter]
+name = "Bad Filter"
