@@ -1,7 +1,9 @@
 # dragon-vst
 ---
 
-Rust audio plugins (VST3 + CLAP) built with [nih-plug](https://github.com/robbert-vdh/nih-plug), targeting FL Studio on macOS.
+Rust audio plugins (VST3 + CLAP) built with [nih-plug](https://github.com/robbert-vdh/nih-plug), for macOS (tested in LYNX; any VST3 or CLAP host should work).
+
+Full documentation: [docs/](docs/README.md).
 
 VST List:
 
@@ -12,24 +14,18 @@ VST List:
 ```
 crates/dsp-core/   host-independent DSP, unit-tested
 vst/dragon_threeq/ the EQ plugin (nih-plug + egui)
+tools/clap-smoke/  headless CLAP host used as a pre-install check
 xtask/             bundling (`cargo xtask ...`)
+docs/              documentation
 ```
 
-## Build
+## Build and install
 
 ```sh
-cargo test --workspace
-cargo xtask bundle-universal dragon_threeq --release   # arm64 + x86_64
+./build2lynx.sh dragon_threeq   # test, universal build, smoke test, install
 ```
 
-Bundles land in `target/bundled/`. Install for FL Studio:
-
-```sh
-cp -R "target/bundled/Dragon ThreeQ.vst3" ~/Library/Audio/Plug-Ins/VST3/
-cp -R "target/bundled/Dragon ThreeQ.clap" ~/Library/Audio/Plug-Ins/CLAP/
-```
-
-Then rescan in FL Studio (Options → Manage plugins → Find plugins).
+This installs `Dragon ThreeQ.vst3` and `Dragon ThreeQ.clap` into `~/Library/Audio/Plug-Ins/{VST3,CLAP}`. Then rescan plugins in your host. See [docs/tools.md](docs/tools.md) for each step, and for building without installing.
 
 ## Validate
 

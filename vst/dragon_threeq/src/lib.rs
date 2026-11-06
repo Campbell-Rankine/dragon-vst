@@ -2,6 +2,9 @@
 //!
 //! Current state: a 3-band EQ (low shelf, mid bell, high shelf) plus output
 //! gain, with a dark egui editor of rotary knobs.
+//!
+//! Signal flow per channel: low shelf -> mid bell -> high shelf -> output gain.
+//! See `docs/dragon_threeq.md` in the repository for the full write-up.
 
 use dsp_core::{Svf, SvfCoefs, SvfShape};
 use nih_plug::prelude::*;
@@ -11,10 +14,14 @@ use std::sync::Arc;
 mod knob;
 use knob::Knob;
 
+/// Mono or stereo; see `AUDIO_IO_LAYOUTS`.
 const MAX_CHANNELS: usize = 2;
+/// Low shelf, mid bell, high shelf, in processing order.
 const NUM_BANDS: usize = 3;
+/// Fixed Q for the shelves (Butterworth: no overshoot at the corner).
 const SHELF_Q: f32 = 0.707;
 
+/// Editor colours. Band colours: low = mint, mid = cyan, high = red.
 mod theme {
     use nih_plug_egui::egui::Color32;
 
@@ -29,6 +36,8 @@ mod theme {
     pub const OUTPUT: Color32 = Color32::from_gray(200);
 }
 
+/// The plugin instance. Owns the audio-thread state; parameters are shared
+/// with the editor through [`DragonThreeqParams`].
 pub struct DragonThreeq {
     params: Arc<DragonThreeqParams>,
     sample_rate: f32,
@@ -39,29 +48,41 @@ pub struct DragonThreeq {
     coef_inputs: [(f32, f32, f32); NUM_BANDS],
 }
 
+/// Automatable parameters.
+///
+/// The `#[id = "..."]` strings are saved in host projects and automation.
+/// Never rename or reuse one, or existing projects will lose those settings.
 #[derive(Params)]
 pub struct DragonThreeqParams {
     /// Editor window size, persisted with the plugin state.
     #[persist = "editor-state"]
     editor_state: Arc<EguiState>,
 
+    /// Low shelf corner, 20 Hz - 1 kHz.
     #[id = "low_freq"]
     pub low_freq: FloatParam,
+    /// Low shelf gain, +/-18 dB.
     #[id = "low_gain"]
     pub low_gain: FloatParam,
 
+    /// Mid bell centre, 100 Hz - 10 kHz.
     #[id = "mid_freq"]
     pub mid_freq: FloatParam,
+    /// Mid bell gain, +/-18 dB.
     #[id = "mid_gain"]
     pub mid_gain: FloatParam,
+    /// Mid bell width, 0.1 (wide) - 10 (narrow).
     #[id = "mid_q"]
     pub mid_q: FloatParam,
 
+    /// High shelf corner, 1 - 20 kHz.
     #[id = "high_freq"]
     pub high_freq: FloatParam,
+    /// High shelf gain, +/-18 dB.
     #[id = "high_gain"]
     pub high_gain: FloatParam,
 
+    /// Output gain, +/-36 dB, stored as a linear factor.
     #[id = "out_gain"]
     pub output_gain: FloatParam,
 }
