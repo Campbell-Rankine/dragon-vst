@@ -1,0 +1,12 @@
+[package]
+name = "clap-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Headless CLAP host that loads a built .clap bundle and runs audio through it"
+
+[dependencies]
+# Same clap-sys revision nih-plug uses, so no extra download.
+clap-sys = { git = "https://github.com/micahrj/clap-sys.git", rev = "25d7f53fdb6363ad63fbd80049cb7a42a97ac156" }
+libloading = "0.8"
