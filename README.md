@@ -5,13 +5,13 @@ Rust audio plugins (VST3 + CLAP) built with [nih-plug](https://github.com/robber
 
 VST List:
 
-1. bad filter: a parametric/dynamic EQ inspired by FabFilter Pro-Q 4 (`vst/bad_filter`)
+1. dragon_threeq: a 3-band EQ, growing toward a Pro-Q 4-style parametric/dynamic EQ (`vst/dragon_threeq`)
 
 ## Layout
 
 ```
 crates/dsp-core/   host-independent DSP, unit-tested
-vst/bad_filter/    the EQ plugin (nih-plug + egui)
+vst/dragon_threeq/ the EQ plugin (nih-plug + egui)
 xtask/             bundling (`cargo xtask ...`)
 ```
 
@@ -19,14 +19,14 @@ xtask/             bundling (`cargo xtask ...`)
 
 ```sh
 cargo test --workspace
-cargo xtask bundle-universal bad_filter --release   # arm64 + x86_64
+cargo xtask bundle-universal dragon_threeq --release   # arm64 + x86_64
 ```
 
 Bundles land in `target/bundled/`. Install for FL Studio:
 
 ```sh
-cp -R "target/bundled/Bad Filter.vst3" ~/Library/Audio/Plug-Ins/VST3/
-cp -R "target/bundled/Bad Filter.clap" ~/Library/Audio/Plug-Ins/CLAP/
+cp -R "target/bundled/Dragon ThreeQ.vst3" ~/Library/Audio/Plug-Ins/VST3/
+cp -R "target/bundled/Dragon ThreeQ.clap" ~/Library/Audio/Plug-Ins/CLAP/
 ```
 
 Then rescan in FL Studio (Options → Manage plugins → Find plugins).
@@ -35,7 +35,7 @@ Then rescan in FL Studio (Options → Manage plugins → Find plugins).
 
 ```sh
 cargo install --git https://github.com/free-audio/clap-validator --locked clap-validator
-clap-validator validate "target/bundled/Bad Filter.clap"
+clap-validator validate "target/bundled/Dragon ThreeQ.clap"
 ```
 
 ## License

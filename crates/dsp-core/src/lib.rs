@@ -1,7 +1,11 @@
 //! Host-independent DSP building blocks for dragon-vst plugins.
 //!
 //! Nothing in this crate may depend on nih-plug, so it can be unit-tested
-//! without a plugin host. Filters, analyzers, etc. land here from milestone 1.
+//! without a plugin host.
+
+pub mod svf;
+
+pub use svf::{Svf, SvfCoefs, SvfShape};
 
 /// Convert decibels to linear gain. Values at or below -100 dB map to 0.0.
 #[inline]
