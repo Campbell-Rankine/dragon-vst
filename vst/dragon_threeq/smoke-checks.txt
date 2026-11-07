@@ -1,0 +1,18 @@
+# Parameter checks run by build2lynx.sh through tools/clap-smoke after bundling.
+# Format: <description> | <clap-smoke options>
+# Expected values come from the analog prototypes (see docs/dsp.md), not from
+# our own output. The input is the same sine on both channels.
+
+mid bell +12 dB at its centre      | --set "Mid Gain=12" --expect-db 12
+mid bell -12 dB at its centre      | --set "Mid Gain=-12" --expect-db -12
+low cut 24 dB/oct at the corner    | --set "Low Type=Low Cut" --set "Low Freq=1000" --set "Low Slope=24 dB/oct" --expect-db -3.0103
+low cut 48 dB/oct, 1 oct below     | --set "Low Type=Low Cut" --set "Low Freq=1000" --set "Low Slope=48 dB/oct" --tone 500 --expect-db -48.165 --tol 0.1
+high cut 18 dB/oct, 1 oct above    | --set "High Type=High Cut" --set "High Freq=500" --set "High Slope=18 dB/oct" --expect-db -18.13 --tol 0.1
+band-pass Q 1 at half its freq     | --set "Mid Type=Band Pass" --set "Mid Freq=2000" --set "Mid Q=1" --expect-db -5.12
+tilt shelf is 0 dB at its centre   | --set "Mid Type=Tilt Shelf" --set "Mid Gain=12" --expect-db 0
+placement Left                     | --set "Mid Gain=12" --set "Mid Stereo=Left" --expect-left-db 12 --expect-right-db 0
+placement Right                    | --set "Mid Gain=12" --set "Mid Stereo=Right" --expect-left-db 0 --expect-right-db 12
+placement Mid (L=R input)          | --set "Mid Gain=12" --set "Mid Stereo=Mid" --expect-db 12
+placement Side (L=R: no side)      | --set "Mid Gain=12" --set "Mid Stereo=Side" --expect-db 0
+a band switched off does nothing   | --set "Mid Gain=12" --set "Mid On=Off" --expect-db 0
+output gain -6 dB                  | --set "Output Gain=-6" --expect-db -6

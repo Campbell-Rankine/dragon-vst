@@ -123,7 +123,7 @@ and ad-hoc code-signs them. Universal builds need the x86_64 target:
 ## API docs
 
 ```sh
-cargo doc --no-deps -p dsp-core -p dragon_24eq -p clap-smoke --open
+cargo doc --no-deps -p dsp-core -p dragon_24eq -p dragon_threeq -p clap-smoke --open
 ```
 
 ## Optional: external validators

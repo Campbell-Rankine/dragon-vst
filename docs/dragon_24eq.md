@@ -63,8 +63,9 @@ The editor greys out controls that don't apply.
 
 **Do not change IDs** (parameter IDs or the enum `#[id]`s). Hosts store them in
 projects and automation. Add new IDs for new parameters, and never reuse a removed one.
-Milestone 1 replaced the 3-band IDs (`low_freq` and so on), so projects saved with the 3-band
-version lose their band settings.
+Milestone 1 replaced the 3-band IDs (`low_freq` and so on). Dragon ThreeQ now uses those IDs
+and the original CLAP/VST3 IDs again, so projects saved with the 3-band version load into
+Dragon ThreeQ (see [dragon_threeq.md](dragon_threeq.md)).
 
 ## Processing
 

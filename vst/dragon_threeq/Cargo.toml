@@ -1,0 +1,15 @@
+[package]
+name = "dragon_threeq"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "A 3-band parametric EQ"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+nih_plug.workspace = true
+nih_plug_egui.workspace = true
+dsp-core.workspace = true

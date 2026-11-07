@@ -1,3 +1,5 @@
 # Display names used by `cargo xtask bundle`.
 [dragon_24eq]
 name = "Dragon 24EQ"
+[dragon_threeq]
+name = "Dragon ThreeQ"

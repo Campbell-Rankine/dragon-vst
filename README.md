@@ -8,12 +8,14 @@ Full documentation: [docs/](docs/README.md).
 VST List:
 
 1. dragon_24eq: a 24-band parametric EQ (9 filter types, 6-96 dB/oct cuts, mid/side), growing toward a Pro-Q 4-style dynamic EQ (`vst/dragon_24eq`)
+2. dragon_threeq: a 3-band EQ (Low, Mid, High) with the same per-band controls as Dragon 24EQ, all on one screen (`vst/dragon_threeq`)
 
 ## Layout
 
 ```
 crates/dsp-core/   host-independent DSP, unit-tested
-vst/dragon_24eq/ the EQ plugin (nih-plug + egui)
+vst/dragon_24eq/   the 24-band EQ plugin (nih-plug + egui)
+vst/dragon_threeq/ the 3-band EQ plugin (nih-plug + egui)
 tools/clap-smoke/  headless CLAP host used as a pre-install check
 xtask/             bundling (`cargo xtask ...`)
 docs/              documentation
@@ -22,10 +24,11 @@ docs/              documentation
 ## Build and install
 
 ```sh
-./build2lynx.sh dragon_24eq   # test, universal build, smoke test, install
+./build2lynx.sh dragon_24eq     # test, universal build, smoke test, install
+./build2lynx.sh dragon_threeq   # same for Dragon ThreeQ
 ```
 
-This installs `Dragon 24EQ.vst3` and `Dragon 24EQ.clap` into `~/Library/Audio/Plug-Ins/{VST3,CLAP}`. Then rescan plugins in your host. See [docs/tools.md](docs/tools.md) for each step, and for building without installing.
+This installs `<Display Name>.vst3` and `<Display Name>.clap` (e.g. `Dragon 24EQ`) into `~/Library/Audio/Plug-Ins/{VST3,CLAP}`. Then rescan plugins in your host. See [docs/tools.md](docs/tools.md) for each step, and for building without installing.
 
 ## Validate
 
