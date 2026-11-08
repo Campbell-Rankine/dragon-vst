@@ -1,0 +1,12 @@
+# Parameter checks run by build2lynx.sh through tools/clap-smoke after bundling.
+# Format: <description> | <clap-smoke options>
+# Instruments get no audio input. Each check plays a note (A4 unless --note),
+# checks the held peak in dBFS against --min-db / --max-db, then sends note-off
+# and checks the output decays to silence (unless --hold).
+# One full-velocity sine voice peaks at exactly the Volume setting.
+
+default volume -12 dBFS            | --min-db -12.05 --max-db -11.95
+volume 0 dB peaks at 0 dBFS        | --set "Volume=0" --min-db -0.05 --max-db 0.05
+half velocity is 6 dB quieter      | --velocity 0.5 --min-db -18.07 --max-db -17.97
+low note plays and releases        | --note 24
+high note plays and releases       | --note 108

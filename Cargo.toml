@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["xtask", "crates/dsp-core", "vst/dragon_24eq", "vst/dragon_threeq", "tools/clap-smoke"]
+members = ["xtask", "crates/dsp-core", "vst/dragon_24eq", "vst/dragon_threeq", "vst/dragon_waave", "tools/clap-smoke"]
 
 [workspace.package]
 version = "0.1.0"

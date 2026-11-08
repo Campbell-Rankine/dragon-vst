@@ -1,6 +1,12 @@
 //! Headless CLAP smoke test: load a `.clap` bundle, instantiate every plugin in
-//! it, run a stereo sine through it, check the output level, and save its
-//! state. Exits non-zero on any failure.
+//! it, run audio through it, check the output level, and save its state.
+//! Exits non-zero on any failure.
+//!
+//! Effects (plugins with an audio input) get a stereo sine and are checked for
+//! the level change relative to it. Instruments (no audio input) get a note
+//! instead: by default A4 (MIDI 69) at full velocity, released halfway through.
+//! They're checked for sound while the note is held (peak in dBFS within
+//! `--min-db` / `--max-db`) and for silence at the end (no stuck notes).
 //!
 //! ```text
 //! clap-smoke <Plugin.clap> [options]
@@ -8,25 +14,37 @@
 //!   --set "<param name>=<text>"   set a parameter before processing (repeatable);
 //!                                 the text is parsed by the plugin, e.g. "12",
 //!                                 "Low Cut", "On" / "Off", "48 dB/oct"
+//!
+//! Effects:
 //!   --tone <Hz>                   test tone frequency (default 1000)
 //!   --expect-db <dB>              expected output level change, both channels (default 0)
 //!   --expect-left-db <dB>         override for the left channel
 //!   --expect-right-db <dB>        override for the right channel
 //!   --tol <dB>                    allowed error (default 0.05)
+//!
+//! Instruments (also usable on effects that accept notes):
+//!   --note <key>                  MIDI key to play (default 69 for instruments)
+//!   --velocity <0..1>             note-on velocity (default 1)
+//!   --hold                        never send note-off (skips the silence check)
+//!   --min-db <dBFS>               minimum held output peak (default -60 for instruments)
+//!   --max-db <dBFS>               maximum held output peak (default 0 for instruments)
 //! ```
 //!
 //! Examples:
 //! ```text
 //! cargo run -p clap-smoke -- "target/bundled/Dragon 24EQ.clap"
 //! cargo run -p clap-smoke -- "target/bundled/Dragon 24EQ.clap" --set "Band 2 Gain=12" --expect-db 12
+//! cargo run -p clap-smoke -- "target/bundled/Dragon Waave.clap" --note 48 --min-db -20
 //! ```
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    clap_event_header, clap_event_param_value, clap_input_events, clap_output_events, CLAP_CORE_EVENT_SPACE_ID,
-    CLAP_EVENT_PARAM_VALUE,
+    clap_event_header, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
 };
+use clap_sys::ext::audio_ports::{clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
+use clap_sys::ext::note_ports::{clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS};
 use clap_sys::ext::params::{clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS};
 use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
@@ -45,6 +63,15 @@ const BLOCKS: usize = 100;
 /// Blocks skipped before measuring, so parameter smoothing has settled.
 const SETTLE_BLOCKS: usize = 20;
 const INPUT_AMPLITUDE: f32 = 0.5;
+/// Block the note-off is sent in (about 0.53 s in).
+const NOTE_OFF_BLOCK: usize = 50;
+/// The last this-many blocks must be silent after a note-off (about 0.1 s).
+const TAIL_BLOCKS: usize = 10;
+/// Peak level (dBFS) that counts as silence.
+const SILENCE_DB: f64 = -80.0;
+const DEFAULT_NOTE: u8 = 69;
+const INSTRUMENT_MIN_DB: f64 = -60.0;
+const INSTRUMENT_MAX_DB: f64 = 0.0;
 
 macro_rules! check {
     ($cond:expr, $($msg:tt)*) => {
@@ -58,17 +85,34 @@ struct Options {
     bundle: PathBuf,
     sets: Vec<(String, String)>,
     tone: f32,
-    expect_left_db: f64,
-    expect_right_db: f64,
+    /// `None` unless given; instruments reject them.
+    expect_left_db: Option<f64>,
+    expect_right_db: Option<f64>,
     tol: f64,
+    note: Option<u8>,
+    velocity: f64,
+    hold: bool,
+    min_db: Option<f64>,
+    max_db: Option<f64>,
 }
 
 fn parse_args() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     let bundle = PathBuf::from(args.next().ok_or("missing <Plugin.clap>")?);
-    let mut opts =
-        Options { bundle, sets: Vec::new(), tone: 1000.0, expect_left_db: 0.0, expect_right_db: 0.0, tol: 0.05 };
-    let (mut left, mut right, mut both) = (None, None, 0.0);
+    let mut opts = Options {
+        bundle,
+        sets: Vec::new(),
+        tone: 1000.0,
+        expect_left_db: None,
+        expect_right_db: None,
+        tol: 0.05,
+        note: None,
+        velocity: 1.0,
+        hold: false,
+        min_db: None,
+        max_db: None,
+    };
+    let (mut left, mut right, mut both) = (None, None, None);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
         let num = |s: String| s.parse::<f64>().map_err(|e| format!("bad number {s:?}: {e}"));
@@ -79,15 +123,28 @@ fn parse_args() -> Result<Options, String> {
                 opts.sets.push((name.to_string(), text.to_string()));
             }
             "--tone" => opts.tone = num(value()?)? as f32,
-            "--expect-db" => both = num(value()?)?,
+            "--expect-db" => both = Some(num(value()?)?),
             "--expect-left-db" => left = Some(num(value()?)?),
             "--expect-right-db" => right = Some(num(value()?)?),
             "--tol" => opts.tol = num(value()?)?,
+            "--note" => {
+                let v = value()?;
+                let key = v.parse::<u8>().map_err(|e| format!("bad note {v:?}: {e}"))?;
+                check!(key <= 127, "--note must be 0..=127, got {key}");
+                opts.note = Some(key);
+            }
+            "--velocity" => {
+                opts.velocity = num(value()?)?;
+                check!((0.0..=1.0).contains(&opts.velocity), "--velocity must be 0..=1");
+            }
+            "--hold" => opts.hold = true,
+            "--min-db" => opts.min_db = Some(num(value()?)?),
+            "--max-db" => opts.max_db = Some(num(value()?)?),
             other => return Err(format!("unknown option {other}")),
         }
     }
-    opts.expect_left_db = left.unwrap_or(both);
-    opts.expect_right_db = right.unwrap_or(both);
+    opts.expect_left_db = left.or(both);
+    opts.expect_right_db = right.or(both);
     Ok(opts)
 }
 
@@ -96,14 +153,29 @@ unsafe extern "C" fn host_get_extension(_: *const clap_host, _: *const c_char) -
 }
 unsafe extern "C" fn host_noop(_: *const clap_host) {}
 
-/// Input event list backed by a `Vec<clap_event_param_value>` in `ctx`.
+/// An input event of any type we send.
+enum Event {
+    Param(clap_event_param_value),
+    Note(clap_event_note),
+}
+
+impl Event {
+    fn header(&self) -> &clap_event_header {
+        match self {
+            Event::Param(e) => &e.header,
+            Event::Note(e) => &e.header,
+        }
+    }
+}
+
+/// Input event list backed by a `Vec<Event>` in `ctx`.
 unsafe extern "C" fn in_events_size(list: *const clap_input_events) -> u32 {
-    let events = &*((*list).ctx as *const Vec<clap_event_param_value>);
+    let events = &*((*list).ctx as *const Vec<Event>);
     events.len() as u32
 }
 unsafe extern "C" fn in_events_get(list: *const clap_input_events, index: u32) -> *const clap_event_header {
-    let events = &*((*list).ctx as *const Vec<clap_event_param_value>);
-    &events[index as usize].header
+    let events = &*((*list).ctx as *const Vec<Event>);
+    events[index as usize].header()
 }
 unsafe extern "C" fn out_events_push(_: *const clap_output_events, _: *const clap_event_header) -> bool {
     true
@@ -119,7 +191,11 @@ fn main() -> ExitCode {
     let opts = match parse_args() {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("error: {e}\nusage: clap-smoke <Plugin.clap> [--set NAME=TEXT]... [--tone HZ] [--expect-db DB] [--expect-left-db DB] [--expect-right-db DB] [--tol DB]");
+            eprintln!(
+                "error: {e}\nusage: clap-smoke <Plugin.clap> [--set NAME=TEXT]... [--tone HZ] [--expect-db DB] \
+                 [--expect-left-db DB] [--expect-right-db DB] [--tol DB] [--note KEY] [--velocity V] [--hold] \
+                 [--min-db DBFS] [--max-db DBFS]"
+            );
             return ExitCode::from(2);
         }
     };
@@ -136,7 +212,7 @@ fn main() -> ExitCode {
 }
 
 /// Resolve `--set` names to param-value events via the params extension.
-unsafe fn param_events(plugin: *const clap_plugin, sets: &[(String, String)]) -> Result<Vec<clap_event_param_value>, String> {
+unsafe fn param_events(plugin: *const clap_plugin, sets: &[(String, String)]) -> Result<Vec<Event>, String> {
     if sets.is_empty() {
         return Ok(Vec::new());
     }
@@ -164,7 +240,7 @@ unsafe fn param_events(plugin: *const clap_plugin, sets: &[(String, String)]) ->
             "plugin could not parse {text:?} for {name:?}"
         );
         println!("  set {name} = {text} (value {value})");
-        events.push(clap_event_param_value {
+        events.push(Event::Param(clap_event_param_value {
             header: clap_event_header {
                 size: std::mem::size_of::<clap_event_param_value>() as u32,
                 time: 0,
@@ -179,9 +255,45 @@ unsafe fn param_events(plugin: *const clap_plugin, sets: &[(String, String)]) ->
             channel: -1,
             key: -1,
             value,
-        });
+        }));
     }
     Ok(events)
+}
+
+fn note_event(type_: u16, key: u8, velocity: f64) -> Event {
+    Event::Note(clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_,
+            flags: 0,
+        },
+        note_id: -1,
+        port_index: 0,
+        channel: 0,
+        key: key as i16,
+        velocity,
+    })
+}
+
+/// Number of input ports (audio or note) a plugin reports for an extension
+/// whose vtable starts with `count(plugin, is_input)`. Missing extension = 0.
+unsafe fn input_port_count(plugin: *const clap_plugin, ext_id: &CStr, audio: bool) -> u32 {
+    let p = &*plugin;
+    let ext = (p.get_extension.unwrap())(plugin, ext_id.as_ptr());
+    if ext.is_null() {
+        return 0;
+    }
+    if audio {
+        ((*(ext as *const clap_plugin_audio_ports)).count.unwrap())(plugin, true)
+    } else {
+        ((*(ext as *const clap_plugin_note_ports)).count.unwrap())(plugin, true)
+    }
+}
+
+fn to_dbfs(peak: f32) -> f64 {
+    20.0 * (peak as f64).log10()
 }
 
 unsafe fn run(opts: &Options) -> Result<(), String> {
@@ -231,7 +343,38 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         check!((p.init.unwrap())(plugin), "plugin.init returned false");
         println!("  init ok");
 
-        let events = param_events(plugin, &opts.sets)?;
+        // Effect or instrument?
+        let has_audio_input = input_port_count(plugin, CLAP_EXT_AUDIO_PORTS, true) > 0;
+        let note = opts.note.or((!has_audio_input).then_some(DEFAULT_NOTE));
+        if !has_audio_input {
+            check!(
+                opts.expect_left_db.is_none() && opts.expect_right_db.is_none(),
+                "--expect-*-db measures gain relative to the input; this plugin has no audio input, \
+                 use --min-db / --max-db"
+            );
+        }
+        if note.is_some() {
+            check!(
+                input_port_count(plugin, CLAP_EXT_NOTE_PORTS, false) > 0,
+                "a note is to be played but the plugin has no note input port"
+            );
+        }
+        let (min_db, max_db) = if has_audio_input {
+            (opts.min_db, opts.max_db)
+        } else {
+            (Some(opts.min_db.unwrap_or(INSTRUMENT_MIN_DB)), Some(opts.max_db.unwrap_or(INSTRUMENT_MAX_DB)))
+        };
+        let note_off_block = note.filter(|_| !opts.hold).map(|_| NOTE_OFF_BLOCK);
+
+        // Events per block: params (and note-on) first, then the note-off.
+        let mut schedule: Vec<Vec<Event>> = (0..BLOCKS).map(|_| Vec::new()).collect();
+        schedule[0] = param_events(plugin, &opts.sets)?;
+        if let Some(key) = note {
+            schedule[0].push(note_event(CLAP_EVENT_NOTE_ON, key, opts.velocity));
+            if let Some(b) = note_off_block {
+                schedule[b].push(note_event(CLAP_EVENT_NOTE_OFF, key, 0.0));
+            }
+        }
 
         check!(
             (p.activate.unwrap())(plugin, SAMPLE_RATE, 1, BLOCK as u32),
@@ -241,21 +384,53 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
 
         // Processing happens on its own thread, like a real host's audio thread.
         let plugin_addr = plugin as usize;
-        let tone = opts.tone;
-        let (left, right) = std::thread::spawn(move || process_blocks(plugin_addr as *const clap_plugin, events, tone))
-            .join()
-            .map_err(|_| "audio thread panicked".to_string())??;
-        let to_db = |peak: f32| 20.0 * (peak as f64 / INPUT_AMPLITUDE as f64).log10();
-        let (left_db, right_db) = (to_db(left), to_db(right));
-        println!(
-            "  processed {BLOCKS} blocks of a {tone} Hz tone: left {left_db:+.3} dB, right {right_db:+.3} dB \
-             (expected {:+.3} / {:+.3} ± {})",
-            opts.expect_left_db, opts.expect_right_db, opts.tol
-        );
-        check!(
-            (left_db - opts.expect_left_db).abs() <= opts.tol && (right_db - opts.expect_right_db).abs() <= opts.tol,
-            "output level outside tolerance"
-        );
+        let tone = has_audio_input.then_some(opts.tone);
+        let m = std::thread::spawn(move || {
+            process_blocks(plugin_addr as *const clap_plugin, schedule, tone, note_off_block)
+        })
+        .join()
+        .map_err(|_| "audio thread panicked".to_string())??;
+
+        let (left_dbfs, right_dbfs) = (to_dbfs(m.peak_l), to_dbfs(m.peak_r));
+        let what = match (tone, note) {
+            (Some(hz), Some(key)) => format!("a {hz} Hz tone + note {key}"),
+            (Some(hz), None) => format!("a {hz} Hz tone"),
+            (None, Some(key)) => format!("note {key}"),
+            (None, None) => "silence".to_string(),
+        };
+
+        if has_audio_input {
+            let in_db = to_dbfs(INPUT_AMPLITUDE);
+            let (left_db, right_db) = (left_dbfs - in_db, right_dbfs - in_db);
+            let (exp_l, exp_r) = (opts.expect_left_db.unwrap_or(0.0), opts.expect_right_db.unwrap_or(0.0));
+            println!(
+                "  processed {BLOCKS} blocks of {what}: left {left_db:+.3} dB, right {right_db:+.3} dB \
+                 (expected {exp_l:+.3} / {exp_r:+.3} ± {})",
+                opts.tol
+            );
+            check!(
+                (left_db - exp_l).abs() <= opts.tol && (right_db - exp_r).abs() <= opts.tol,
+                "output level outside tolerance"
+            );
+        } else {
+            println!("  processed {BLOCKS} blocks of {what}: peak left {left_dbfs:+.2} dBFS, right {right_dbfs:+.2} dBFS");
+        }
+
+        if min_db.is_some() || max_db.is_some() {
+            let lo = min_db.unwrap_or(f64::NEG_INFINITY);
+            let hi = max_db.unwrap_or(f64::INFINITY);
+            println!("  held peak range check: {lo:+.2} .. {hi:+.2} dBFS");
+            for (side, db) in [("left", left_dbfs), ("right", right_dbfs)] {
+                check!(db >= lo, "{side} peak {db:+.2} dBFS is below {lo:+.2} dBFS (too quiet / silent)");
+                check!(db <= hi, "{side} peak {db:+.2} dBFS is above {hi:+.2} dBFS");
+            }
+        }
+
+        if note_off_block.is_some() {
+            let tail_db = to_dbfs(m.tail_peak);
+            println!("  after note-off: last {TAIL_BLOCKS} blocks peak {tail_db:+.2} dBFS (must be < {SILENCE_DB} dBFS)");
+            check!(tail_db < SILENCE_DB, "output did not decay to silence after note-off (stuck note?)");
+        }
 
         (p.deactivate.unwrap())(plugin);
 
@@ -274,13 +449,25 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// Feed a stereo sine (same on both channels) through the plugin, sending
-/// `events` with the first block. Returns the settled output peak per channel.
+/// Output peaks from one run.
+struct Measurement {
+    /// Settled peak per channel: from `SETTLE_BLOCKS` up to the note-off (or
+    /// the end if there is none).
+    peak_l: f32,
+    peak_r: f32,
+    /// Peak over both channels in the last `TAIL_BLOCKS` blocks.
+    tail_peak: f32,
+}
+
+/// Run `BLOCKS` blocks through the plugin, sending `schedule[block]` with
+/// each block. With `tone`, the input is a stereo sine (same on both
+/// channels); without, the plugin gets no audio input.
 unsafe fn process_blocks(
     plugin: *const clap_plugin,
-    events: Vec<clap_event_param_value>,
-    tone: f32,
-) -> Result<(f32, f32), String> {
+    schedule: Vec<Vec<Event>>,
+    tone: Option<f32>,
+    note_off_block: Option<usize>,
+) -> Result<Measurement, String> {
     let p = &*plugin;
     check!((p.start_processing.unwrap())(plugin), "start_processing returned false");
 
@@ -288,22 +475,28 @@ unsafe fn process_blocks(
     let mut in_r = vec![0f32; BLOCK];
     let mut out_l = vec![0f32; BLOCK];
     let mut out_r = vec![0f32; BLOCK];
-    let no_events: Vec<clap_event_param_value> = Vec::new();
-    let first_events =
-        clap_input_events { ctx: &events as *const _ as *mut c_void, size: Some(in_events_size), get: Some(in_events_get) };
-    let later_events =
-        clap_input_events { ctx: &no_events as *const _ as *mut c_void, size: Some(in_events_size), get: Some(in_events_get) };
+    let event_lists: Vec<clap_input_events> = schedule
+        .iter()
+        .map(|events| clap_input_events {
+            ctx: events as *const _ as *mut c_void,
+            size: Some(in_events_size),
+            get: Some(in_events_get),
+        })
+        .collect();
     let out_events = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(out_events_push) };
 
-    let (mut peak_l, mut peak_r) = (0f32, 0f32);
+    let measure_end = note_off_block.unwrap_or(BLOCKS);
+    let mut m = Measurement { peak_l: 0.0, peak_r: 0.0, tail_peak: 0.0 };
     let mut phase = 0f64;
-    let step = 2.0 * std::f64::consts::PI * tone as f64 / SAMPLE_RATE;
-    for block in 0..BLOCKS {
-        for i in 0..BLOCK {
-            let s = INPUT_AMPLITUDE * phase.sin() as f32;
-            in_l[i] = s;
-            in_r[i] = s;
-            phase += step;
+    let step = 2.0 * std::f64::consts::PI * tone.unwrap_or(0.0) as f64 / SAMPLE_RATE;
+    for (block, in_events) in event_lists.iter().enumerate() {
+        if tone.is_some() {
+            for i in 0..BLOCK {
+                let s = INPUT_AMPLITUDE * phase.sin() as f32;
+                in_l[i] = s;
+                in_r[i] = s;
+                phase += step;
+            }
         }
         let mut in_ptrs = [in_l.as_mut_ptr(), in_r.as_mut_ptr()];
         let mut out_ptrs = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
@@ -325,11 +518,11 @@ unsafe fn process_blocks(
             steady_time: (block * BLOCK) as i64,
             frames_count: BLOCK as u32,
             transport: std::ptr::null(),
-            audio_inputs: &inputs,
+            audio_inputs: if tone.is_some() { &inputs } else { std::ptr::null() },
             audio_outputs: &mut outputs,
-            audio_inputs_count: 1,
+            audio_inputs_count: tone.is_some() as u32,
             audio_outputs_count: 1,
-            in_events: if block == 0 { &first_events } else { &later_events },
+            in_events,
             out_events: &out_events,
         };
         let status = (p.process.unwrap())(plugin, &process);
@@ -337,12 +530,15 @@ unsafe fn process_blocks(
         for (&y, out) in out_l.iter().zip(&out_r) {
             check!(y.is_finite() && out.is_finite(), "non-finite output on block {block}");
         }
-        if block >= SETTLE_BLOCKS {
-            peak_l = out_l.iter().fold(peak_l, |m, s| m.max(s.abs()));
-            peak_r = out_r.iter().fold(peak_r, |m, s| m.max(s.abs()));
+        if (SETTLE_BLOCKS..measure_end).contains(&block) {
+            m.peak_l = out_l.iter().fold(m.peak_l, |acc, s| acc.max(s.abs()));
+            m.peak_r = out_r.iter().fold(m.peak_r, |acc, s| acc.max(s.abs()));
+        }
+        if block >= BLOCKS - TAIL_BLOCKS {
+            m.tail_peak = out_l.iter().chain(&out_r).fold(m.tail_peak, |acc, s| acc.max(s.abs()));
         }
     }
 
     (p.stop_processing.unwrap())(plugin);
-    Ok((peak_l, peak_r))
+    Ok(m)
 }

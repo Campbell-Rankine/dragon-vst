@@ -13,7 +13,8 @@ step must pass before the next one runs:
 2. **Bundle:** `cargo xtask bundle-universal <package> --release` builds
    arm64 + x86_64 VST3 and CLAP bundles into `target/bundled/`.
 3. **Smoke test:** runs [`clap-smoke`](#clap-smoke-headless-host-check) on
-   the new `.clap` at default settings (expects unity gain), then each
+   the new `.clap` at default settings (effects: expects unity gain;
+   instruments: plays a note and expects sound, then silence), then each
    check in `vst/<name>/smoke-checks.txt` if the file exists.
 4. **Install:** replaces `~/Library/Audio/Plug-Ins/VST3/<Name>.vst3` and
    `~/Library/Audio/Plug-Ins/CLAP/<Name>.clap`. The old bundle is deleted
@@ -40,6 +41,9 @@ open, close and reopen it; see [troubleshooting.md](troubleshooting.md).
 cargo run -p clap-smoke --release -- "target/bundled/Dragon 24EQ.clap" [options]
 ```
 
+Effects and instruments are both supported. The plugin's `clap.audio-ports`
+extension decides which: a plugin with no audio input is an instrument.
+
 Source: [`tools/clap-smoke/src/main.rs`](../tools/clap-smoke/src/main.rs).
 A minimal CLAP host with no GUI. For every plugin in the bundle it:
 
@@ -49,12 +53,21 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
    through the `clap.params` extension.
 4. Calls `activate` (48 kHz, 1–512 frames).
 5. On a separate thread, as a real audio thread would: `start_processing`,
-   then 100 blocks of a 0.5-amplitude sine (the same on both channels), with
-   the parameter events in the first block, then `stop_processing`. Any
-   non-finite output fails the run.
-6. Measures each channel's peak after 20 blocks (time for smoothing to
-   settle), converts it to a dB change and compares it with the
-   expectation.
+   then 100 blocks of 512 samples, then `stop_processing`. Parameter events
+   go in the first block. Any non-finite output fails the run.
+   - **Effects:** the input is a 0.5-amplitude sine (the same on both
+     channels).
+   - **Instruments:** there is no audio input. A note-on (A4 by default) goes
+     in the first block and a note-off in block 50 (about 0.53 s). The plugin
+     must have a `clap.note-ports` input.
+6. Measures each channel's peak from block 20 (time for smoothing to settle)
+   to the note-off, or to the end if there isn't one.
+   - **Effects:** converts the peak to a dB change from the input and
+     compares it with `--expect-db`.
+   - **Instruments:** checks the peak in dBFS lies within `--min-db` ..
+     `--max-db` (default -60 .. 0), so the note must be audible and must not
+     clip. After the note-off, the last 10 blocks must be below -80 dBFS,
+     which catches stuck notes.
 7. Calls `deactivate`, saves the state through `clap.state` (checks it
    succeeds), and calls `destroy`.
 
@@ -65,6 +78,13 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
 | `--expect-db <dB>` | Expected level change on both channels (default 0) |
 | `--expect-left-db`, `--expect-right-db` | Per-channel overrides |
 | `--tol <dB>` | Allowed error (default 0.05) |
+| `--note <key>` | MIDI key to play, 0–127 (default 69 for instruments; effects get no note unless given) |
+| `--velocity <0..1>` | Note-on velocity (default 1) |
+| `--hold` | Never send note-off; skips the silence check |
+| `--min-db`, `--max-db` | Bounds on the held output peak in dBFS (instrument defaults -60 and 0; effects only check them if given) |
+
+`--expect-db` and the per-channel overrides are relative to the input, so
+they're rejected for instruments. Use `--min-db` / `--max-db` instead.
 
 It prints the measured levels, then `PASS` (exit 0) or `FAIL: <reason>`
 (exit 1). Bad arguments exit with 2.
@@ -73,12 +93,18 @@ It prints the measured levels, then `PASS` (exit 0) or `FAIL: <reason>`
 # A +12 dB bell measured at its centre:
 cargo run -q -p clap-smoke --release -- "target/bundled/Dragon 24EQ.clap" \
     --set "Band 2 Gain=12" --expect-db 12
+
+# Middle C on the synth must peak between -20 and 0 dBFS, then release:
+cargo run -q -p clap-smoke --release -- "target/bundled/Dragon Waave.clap" \
+    --note 60 --min-db -20
 ```
 
 **Limitations:**
 - **No editor:** it doesn't open the plugin window, so GUI bugs won't show.
 - **One tone per run:** it measures the level of a single steady sine, not
   a full frequency response.
+- **One note per run:** instruments are checked by peak level only, not
+  pitch, timbre or polyphony.
 - **CLAP only:** the VST3 build is the same code behind a different
   wrapper, but it isn't loaded here.
 
@@ -106,6 +132,8 @@ bell +12 dB at its centre | --set "Band 2 Gain=12" --expect-db 12
   - switching a band off
   - output gain
   - stacked 96 dB/oct high cuts near Nyquist (a regression check)
+- **Dragon Waave's checks** cover the volume and velocity levels, and notes
+  at both ends of the keyboard playing and releasing.
 
 ## `xtask`: bundler
 
