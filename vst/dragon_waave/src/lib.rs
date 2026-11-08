@@ -4,7 +4,7 @@
 //! (later) the editor. The sound engine is `dsp_core::synth`, which is
 //! host-independent and unit-tested.
 //!
-//! Current state (step 3, phases 1-6): two band-limited oscillators (OSC 2
+//! Current state (step 3, phases 1-7, the full signal path): two band-limited oscillators (OSC 2
 //! with hard sync and through-zero cross-mod from OSC 1), ring mod, a
 //! phase-locked sub-oscillator and noise into a mixer; drive, a high-pass
 //! and the main filter (LP24 ladder, SVF, or MS-20 style Korg35); up to 16
@@ -12,12 +12,15 @@
 //! curves and velocity); two tempo-syncable LFOs (LFO 1 hard-wired to
 //! pitch, PWM and cutoff); a 6-slot mod matrix; pitch bend, mod wheel and
 //! aftertouch; per-voice pan; poly / mono / legato with glide, unison
-//! (detune, spread) and drift. Chorus follows; see `docs/dragon_waave.md`.
+//! (detune, spread) and drift; chorus I / II / ensemble and an output soft
+//! clip; an optional 2x oversampled HQ mode. See `docs/dragon_waave.md`.
 
 use dsp_core::synth::{Synth, RAMP_SAMPLES};
 use nih_plug::prelude::*;
 use std::sync::Arc;
 
+mod displays;
+mod editor;
 mod params;
 
 pub use params::{DragonWaaveParams, Read};
@@ -36,25 +39,46 @@ pub struct DragonWaave {
 
 impl Default for DragonWaave {
     fn default() -> Self {
-        Self { params: Arc::new(DragonWaaveParams::default()), synth: Synth::new(48_000.0) }
+        Self {
+            params: Arc::new(DragonWaaveParams::default()),
+            synth: Synth::new(48_000.0),
+        }
     }
 }
 
 impl DragonWaave {
     fn handle_event(&mut self, event: NoteEvent<()>) {
         match event {
-            NoteEvent::NoteOn { voice_id, channel, note, velocity, .. } => {
-                self.synth.note_on(voice_id, channel, note, velocity)
-            }
-            NoteEvent::NoteOff { voice_id, channel, note, .. } => self.synth.note_off(voice_id, channel, note),
-            NoteEvent::Choke { voice_id, channel, note, .. } => self.synth.choke(voice_id, channel, note),
+            NoteEvent::NoteOn {
+                voice_id,
+                channel,
+                note,
+                velocity,
+                ..
+            } => self.synth.note_on(voice_id, channel, note, velocity),
+            NoteEvent::NoteOff {
+                voice_id,
+                channel,
+                note,
+                ..
+            } => self.synth.note_off(voice_id, channel, note),
+            NoteEvent::Choke {
+                voice_id,
+                channel,
+                note,
+                ..
+            } => self.synth.choke(voice_id, channel, note),
             // nih-plug gives bend as 0..1 with 0.5 at rest.
             NoteEvent::MidiPitchBend { value, .. } => self.synth.set_pitch_bend(value * 2.0 - 1.0),
             NoteEvent::MidiCC { cc: 1, value, .. } => self.synth.set_mod_wheel(value),
             NoteEvent::MidiChannelPressure { pressure, .. } => self.synth.set_aftertouch(pressure),
-            NoteEvent::PolyPressure { voice_id, channel, note, pressure, .. } => {
-                self.synth.set_poly_pressure(voice_id, channel, note, pressure)
-            }
+            NoteEvent::PolyPressure {
+                voice_id,
+                channel,
+                note,
+                pressure,
+                ..
+            } => self.synth.set_poly_pressure(voice_id, channel, note, pressure),
             _ => {}
         }
     }
@@ -96,6 +120,10 @@ impl Plugin for DragonWaave {
         true
     }
 
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        editor::create(self.params.clone(), self.params.editor_state.clone())
+    }
+
     fn reset(&mut self) {
         self.synth.reset();
     }
@@ -134,7 +162,8 @@ impl Plugin for DragonWaave {
                 end = end.min(event.timing() as usize);
             }
 
-            self.synth.set_patch(&self.params.patch(Read::Advance((end - pos) as u32), bpm));
+            self.synth
+                .set_patch(&self.params.patch(Read::Advance((end - pos) as u32), bpm));
             match channels {
                 [left, right, ..] => self.synth.render(&mut left[pos..end], &mut right[pos..end]),
                 [mono] => {
@@ -179,8 +208,7 @@ impl ClapPlugin for DragonWaave {
 
 impl Vst3Plugin for DragonWaave {
     const VST3_CLASS_ID: [u8; 16] = *b"DragonWaave00001";
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
-        &[Vst3SubCategory::Instrument, Vst3SubCategory::Synth];
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[Vst3SubCategory::Instrument, Vst3SubCategory::Synth];
 }
 
 nih_export_clap!(DragonWaave);

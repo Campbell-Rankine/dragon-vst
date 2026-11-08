@@ -8,8 +8,7 @@ A 24-band parametric EQ. Source:
 | `lib.rs` | Plugin: per-band runtime state, coefficient updates, stereo routing |
 | `params.rs` | Parameters and their enums (type, slope, stereo placement) |
 | `editor.rs` | egui editor: band chips, band panel, output panel |
-| `knob.rs` | Rotary knob widget |
-| `theme.rs` | Colours |
+| `theme.rs` | Band colours; the palette, knob and panels come from the shared [`dragon-ui`](../crates/dragon-ui) crate |
 | `smoke-checks.txt` | Audio checks run by `build2lynx.sh` (see [tools.md](tools.md)) |
 
 ## Signal flow
@@ -109,7 +108,7 @@ DRAGON 24EQ                               click a band to edit · double-click t
 - Type, Slope and Stereo in peach shades.
 - Controls that don't apply to the current type are greyed out and disabled.
 
-### Colours (`theme.rs`)
+### Colours (`theme.rs`, palette from `dragon-ui`)
 
 | Band type | Colour |
 |---|---|
@@ -123,7 +122,7 @@ DRAGON 24EQ                               click a band to edit · double-click t
 - **Background and panels:** background `#121418`; panels `#242830` with a
   1.5 px peach border; title in peach.
 
-### Knobs (`knob.rs`)
+### Knobs (`dragon-ui`'s `knob.rs`)
 
 - **Drag** up or down to change a value. A full sweep is 200 px; hold
   **Shift** for ten times finer control.

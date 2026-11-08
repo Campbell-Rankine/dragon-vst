@@ -18,10 +18,10 @@ unison and analog drift.
 |---|---|
 | 1–2 Scaffold, instrument plumbing | Done |
 | 7 Smoke test for instruments | Done (see [tools.md](tools.md)) |
-| 3 Sound engine | **Phases 1–6 done**, phases 7–8 to go ([build order](#build-order)) |
-| 4 Full parameter set | Parameters for phases 1–6 exposed; the rest arrive with each phase |
+| 3 Sound engine | **Done** (phases 1–8) |
+| 4 Full parameter set | Done: every engine feature has its parameters |
 | 5 Real-time safety | Ongoing: no allocation in `process()` (enforced by `assert_process_allocs`) |
-| 6 Editor | Not started; hosts show their generic parameter view |
+| 6 Editor | In progress: every control on one page; chips, displays and polish to come ([dragon_waave_ui.md](dragon_waave_ui.md)) |
 | 8 Docs | This page |
 
 ## Signal flow
@@ -53,9 +53,10 @@ Per voice, then summed:
 - Per-voice pan.
 - Poly, mono and legato modes, glide, unison (with detune and spread) and
   drift.
-- Master volume.
+- Master volume, the chorus / ensemble, and the output soft clip.
 
-Still to come: chorus and the output stage.
+That's the whole signal path, plus an optional 2× oversampled HQ mode
+(phase 8).
 
 ## Engine modules
 
@@ -73,12 +74,13 @@ Still to come: chorus and the output stage.
 | `synth/env.rs` | DAHDSR envelopes with curves and velocity | Done |
 | `synth/lfo.rs` | LFOs (7 shapes, mono / poly / retrigger) with per-note delay and fade-in | Done |
 | `synth/matrix.rs` | Mod matrix: 13 sources, 22 destinations, 6 slots with via | Done |
-| `synth/chorus.rs` | BBD-style chorus and ensemble | Planned |
+| `synth/chorus.rs` | BBD-style chorus I / II and ensemble; output soft clip | Done |
+| `synth/oversample.rs` | Halfband decimator for HQ (2×) mode | Done |
 
 ## Engine API
 
 ```rust
-let mut synth = Synth::new(sample_rate);       // the only setup; no allocation after this
+let mut synth = Synth::new(sample_rate);       // allocates the chorus delay lines; nothing allocates after this
 synth.set_patch(&patch);                       // once per block of <= 32 samples
 synth.note_on(voice_id, channel, note, velocity);
 synth.note_off(voice_id, channel, note);
@@ -86,7 +88,7 @@ synth.choke(voice_id, channel, note);
 synth.set_pitch_bend(bend);                    // -1..=1; also set_mod_wheel, set_aftertouch, set_poly_pressure
 synth.render(&mut left, &mut right);           // overwrites both slices
 synth.drain_ended(|end| { /* report VoiceTerminated to the host */ });
-synth.reset();                                 // silence; keeps the patch
+synth.reset();                                 // silence; keeps the patch; reuses the buffers (safe on the audio thread)
 ```
 
 The plugin's `process()`:
@@ -124,7 +126,7 @@ The plugin's `process()`:
 IDs are saved in host projects and automation. **Never rename or reuse
 one.** Groups use a prefix through `#[nested(id_prefix = ...)]`.
 
-### Exposed now (phases 1–6)
+### All parameters
 
 | ID | Name | Range | Default |
 |---|---|---|---|
@@ -164,6 +166,13 @@ one.** Groups use a prefix through `#[nested(id_prefix = ...)]`.
 | `voice_glide_mode` | Glide Mode | Always, Legato | Always |
 | `voice_retrig` | Retrigger | From Current, From Zero | From Current |
 | `voice_drift` | Drift | 0 … 100 % | 0 % |
+| `chorus_mode` | Chorus Mode | Off, I, II, Ensemble | Off |
+| `chorus_rate` | Chorus Rate | 10 … 400 % of the mode's rate | 100 % |
+| `chorus_depth` | Chorus Depth | 0 … 200 % of the mode's sweep | 100 % |
+| `chorus_mix` | Chorus Mix | 0 % dry … 100 % wet (50 % = equal parts) | 50 % |
+| `chorus_tone` | Chorus Tone | 1 … 20 kHz (wet-path low-pass) | 8 kHz |
+| `out_clip` | Output Clip | Off, On | Off |
+| `hq` | HQ (2x Oversampling) | Off, On | Off |
 
 **Envelope parameters.** `env1_` is the amp envelope ("Amp …") and `env2_`
 the filter envelope ("Filter Env …"):
@@ -205,14 +214,22 @@ The default patch is a single sawtooth through the wide-open LP24 ladder.
 Osc 2 is ready at +7 cents, so turning up its level gives an immediate
 detuned double.
 
-### Planned ID prefixes
+That's 122 parameters in total:
 
-| Prefix | Section |
+| Group | Count |
 |---|---|
-| `chorus_` | Chorus and ensemble (phase 7) |
-| `out_` | Output soft clip (phase 7) |
-
-Expect about 110 parameters in total. The editor (step 6) will need two
+| Two oscillators | 14 |
+| Sync, cross-mod and ring | 3 |
+| Sub and noise | 5 |
+| Filter and HPF | 9 |
+| Three envelopes | 30 |
+| Two LFOs | 16 |
+| LFO 1's routes | 3 |
+| Six matrix slots | 24 |
+| Bend range | 1 |
+| Voice settings | 8 |
+| Chorus | 5 |
+| Clip, HQ, polyphony and volume | 4 | The editor (step 6) will need two
 pages: **Main** (oscillators, filter, amp, chorus) and **Mod** (LFOs,
 ENV 3, matrix, voice).
 
@@ -506,21 +523,80 @@ filter.
   - All of this is scaled by Drift, so 0 % is exact and 100 % is a
     well-worn poly. The wander is also a matrix source.
 
-### Chorus / ensemble: phase 7
+### Chorus / ensemble: done (phase 7)
 
-- **Design:** a stereo BBD-style modulated delay with Hermite
-  interpolation.
+- **Order:** voices are summed, then Volume, then the chorus, then the
+  clip. The chorus sees the real output level, so its wet saturation
+  behaves the same whatever the voice count.
+- **Design:**
+  - Bucket-brigade (BBD) style: short modulated delays, read with 4-point
+    Hermite interpolation, which is accurate to 1e-4 at fractional delays.
+  - The wet path gets a 2-pole **tone** low-pass (BBDs are band-limited)
+    and the gentle `sat` saturation.
 - **Modes:**
-  - **I** and **II**: one LFO in quadrature between left and right, at
-    different rates and depths.
-  - **Ensemble**: three taps on a three-phase LFO (Polysix / string-machine
-    style).
-- **Controls:** mode, rate, depth, mix, BBD tone (a low-pass on the wet
-  path) and slight wet-path saturation.
 
-### Output: phase 7
+| Mode | Character | How |
+|---|---|---|
+| **I** | Juno-style: wide and gentle | Triangle LFO at 0.5 Hz sweeps two 5 ms delays ±1.5 ms, left and right in opposite directions |
+| **II** | Juno-style: faster and deeper | The same at 0.85 Hz, ±2 ms |
+| **Ensemble** | Polysix / string-machine shimmer | The mono sum feeds one 7 ms line with three taps. Each is swept by a slow sine (0.6 Hz, ±1.5 ms) plus a fast one (5.5 Hz, ±0.25 ms) at 0°, 120° and 240°. Left = (2·tap 1 + tap 2) / 3, right = (2·tap 3 + tap 2) / 3 |
 
-Master volume (done), then an optional `tanh` soft clip.
+- **Rate and Depth** scale the mode's own tuning: 200 % depth doubles the
+  sweep. Every mode stays inside its 20 ms buffer at any setting (tested).
+- **Mix** crossfades dry to wet: 50 % is equal parts, as on the
+  hardware, and 100 % is wet only (a vibrato).
+- **Exact bypass:** Off, or a mix of 0, leaves the signal bit-identical.
+  The delay lines keep running underneath, so switching the chorus on
+  mid-note is seamless.
+- **Memory:** the delay lines are the engine's only heap memory. They're
+  allocated in `Synth::new`, and `reset()` clears and reuses them, since a
+  host may call it from the audio thread.
+
+### Output: done (phase 7)
+
+- **Master volume.**
+- **Output Clip:** an optional soft clipper.
+  - Exactly linear up to 0.8.
+  - Above that it bends smoothly, with its slope never above 1, toward
+    ±1. It never goes past full scale.
+  - Off by default, so normal levels are untouched.
+
+### Performance and robustness: done (phase 8)
+
+- **Benchmark:** `cargo test -p dsp-core --release synth::tests::bench --
+  --ignored --nocapture`. It plays 16 voices with everything on (both
+  oscillators, sub, noise, ring, sync and FM, the driven resonant ladder,
+  three envelopes, per-voice LFOs, a full matrix, drift and the ensemble).
+  Results on the development Mac (Apple Silicon, one core):
+
+  | Mode | CPU | Speed |
+  |---|---|---|
+  | Normal | about 6.5 % | 15× realtime |
+  | HQ | about 13 % | 8× realtime |
+
+- **Fast `tan`:** the filters' per-sample prewarp uses a [5/4] Padé
+  approximant at x/2 plus the double-angle formula. It's within 2e-6 of
+  `std` across the whole cutoff range (tested). It made no measurable
+  difference to the benchmark, because `tan` wasn't the bottleneck, but it
+  costs nothing in accuracy and is kept.
+- **Denormals:** nih-plug's process wrapper turns on flush-to-zero (on x86
+  and ARM) around every `process()` and `reset()`. The engine needs no
+  extra guards. (Unit tests run without it, which is fine because they
+  only check values.)
+- **HQ (2× oversampling):**
+  - Voices (oscillators, drive, filters, envelopes and LFOs) run at twice
+    the sample rate. Every rate is derived from the voice rate, so pitch
+    and timing are unchanged (tested).
+  - A 63-tap halfband FIR (Kaiser β = 8) filters and decimates the voice
+    sum before Volume and the chorus. It's flat to 20 kHz (within
+    0.01 dB) and over 80 dB down from 28 kHz, so nothing folds back
+    below 20 kHz.
+  - It adds 15.5 samples (0.3 ms) of delay, which isn't reported to the
+    host; that's negligible for an instrument.
+  - Test: C8 through full drive. The 7th and 9th harmonics' aliases (at
+    18.7 and 10.3 kHz) drop by more than 30 dB, and the fundamental is
+    unchanged within 0.05 dB.
+  - Switching HQ mid-note retunes the voices and clears the decimator.
 
 ## Build order
 
@@ -535,8 +611,8 @@ Each phase is wired into the plugin as it lands, so it can be heard in LYNX.
 | 4 | LFOs and hard-wired modulation | **Done** |
 | 5 | Mod matrix; pitch bend, mod wheel, aftertouch | **Done** |
 | 6 | Mono, legato, glide, unison, drift | **Done** |
-| 7 | Chorus / ensemble, output soft clip | |
-| 8 | Hardening: fast math, denormals, performance pass; optional 2× oversampling "HQ" switch if the filters alias at high drive | |
+| 7 | Chorus / ensemble, output soft clip | **Done** |
+| 8 | Hardening: fast math, denormals, performance pass; optional 2× oversampling "HQ" switch | **Done** |
 
 **Later (plugin layer, not engine):** arpeggiator and chord memory, presets
 (Polysix brass, Poly-800 strings, MS sync lead, FM-ish bell, sub bass,
@@ -556,7 +632,9 @@ ensemble pad), editor.
 | LFOs | Rate within one cycle over 20 s, from 0.1 to 50 Hz; every shape's value at known phases; all shapes stay in −1…1; sample & hold steps exactly once per cycle; smooth random never steps faster than its cosine allows; same seed, same randomness; delay then a linear fade-in (half depth halfway); note-on start depends on mode (mono ignores notes, retrigger goes to the start phase, poly randomises) |
 | Matrix | Amount × source × via × range; slots on the same destination add; inactive slots (no source, no destination or 0 amount) do nothing; a via at 0 mutes its slot |
 | Voices | Unison 3 sits at −20, 0 and +20 cents and pans hard left, centre and hard right; one note-off releases the stack; unison 1 and 4 peak at 1 and 2 (1/√N); polyphony counts unison voices; mono last-note priority (releasing a non-sounding key does nothing, releasing the sounding key falls back); mono retriggers and legato doesn't (but legato does after letting go); From Zero restarts the amp from silence, From Current doesn't; glide is part-way at first, then lands; legato glide only glides overlapping notes; poly glide; mono reports the replaced note as ended; drift is exact at 0 % and gives each voice a different offset within ±3 cents at 100 %; Drift as a matrix source; switching voice mode lets go cleanly |
-| Synth | Note on → release → end reported once; the default slots stay silent until the wheel or pressure moves, then the wheel brings in vibrato; via scales by the wheel (0 → 440, 0.5 → 440·√2, 1 → 880 Hz); pitch bend follows the bend range (±2 st, then −12 st → 220 Hz); Osc 2 Pitch doesn't move OSC 1; Key → Cutoff 50 % equals 100 % key tracking; Mod Env and LFO 2 route to the cutoff; channel and poly aftertouch both open the filter; Velocity → Pan sends a voice hard right at unity; Mod Wheel → Amp −100 % silences; Random gives each note a different pitch within its range; Velocity → Env Attack +25 % doubles the attack; Velocity → LFO 1 Rate +25 % doubles a per-voice LFO's rate; LFO > pitch bends 440 Hz to exactly 880 and 220 (square, ±12 st); LFO > cutoff moves the filter 2 octaves onto the note (−12.04 dB); LFO > PWM reaches 95 % (peak 1.9); LFO delay keeps the pitch at exactly 440 Hz until it ends, then the LFO is fully faded in; mono LFOs are shared and poly LFOs per note; ENV 2 sweeps the cutoff by its amount, both up and down (−12.04 dB at the note); sustain 0 frees the voice and reports it without a note-off; amp delay holds the note back exactly; amp velocity amount; ladder at the played pitch is −12.04 dB; 100 % key tracking keeps every note at −12 dB; velocity tracking offsets; HPF bypass is bit-exact at its minimum; every model finite with everything maxed; cutoff ramps in octaves; ring mod equals OSC 1 × OSC 2; sync makes OSC 2 follow OSC 1's pitch; pitch follows octave/semitone/fine; held notes retune; voice-ID note-off; steal order; fade-on-steal is click-free and reported; lowering polyphony; 100 rapid steals never lose a note; choke; phase modes; mixer ramps; extreme settings stay finite; deterministic renders; sanitising; reset |
+| Chorus | Hermite reads within 1e-4 of the true signal at fractional delays; Off and a mix of 0 are bit-exact bypasses; every mode stays inside its buffer at maximum depth; fully wet, every mode wobbles the pitch above and below 440 Hz and makes left and right differ, within ±1; sweeps at 4× rate and 2× depth never step faster than the signal allows; Tone at 1 kHz takes an 8 kHz wet sine down by more than 30 dB; clearing reuses the buffers; the soft clip is exact below 0.8, monotonic, slope ≤ 1, never past 1 |
+| HQ / fast math | Fast `tan` within 2e-6 of `std` from 0 to 0.45·fs; the halfband is flat (±0.05 dB) to 19 kHz and below −75 dB from 28 kHz; HQ removes drive aliases (>30 dB) with the fundamental unchanged; HQ keeps pitch and envelope timing |
+| Synth | Note on → release → end reported once; the chorus widens a centred note in every mode; Output Clip brings a 4.0 peak down to full scale; reset reuses the chorus buffers and is silent; the default slots stay silent until the wheel or pressure moves, then the wheel brings in vibrato; via scales by the wheel (0 → 440, 0.5 → 440·√2, 1 → 880 Hz); pitch bend follows the bend range (±2 st, then −12 st → 220 Hz); Osc 2 Pitch doesn't move OSC 1; Key → Cutoff 50 % equals 100 % key tracking; Mod Env and LFO 2 route to the cutoff; channel and poly aftertouch both open the filter; Velocity → Pan sends a voice hard right at unity; Mod Wheel → Amp −100 % silences; Random gives each note a different pitch within its range; Velocity → Env Attack +25 % doubles the attack; Velocity → LFO 1 Rate +25 % doubles a per-voice LFO's rate; LFO > pitch bends 440 Hz to exactly 880 and 220 (square, ±12 st); LFO > cutoff moves the filter 2 octaves onto the note (−12.04 dB); LFO > PWM reaches 95 % (peak 1.9); LFO delay keeps the pitch at exactly 440 Hz until it ends, then the LFO is fully faded in; mono LFOs are shared and poly LFOs per note; ENV 2 sweeps the cutoff by its amount, both up and down (−12.04 dB at the note); sustain 0 frees the voice and reports it without a note-off; amp delay holds the note back exactly; amp velocity amount; ladder at the played pitch is −12.04 dB; 100 % key tracking keeps every note at −12 dB; velocity tracking offsets; HPF bypass is bit-exact at its minimum; every model finite with everything maxed; cutoff ramps in octaves; ring mod equals OSC 1 × OSC 2; sync makes OSC 2 follow OSC 1's pitch; pitch follows octave/semitone/fine; held notes retune; voice-ID note-off; steal order; fade-on-steal is click-free and reported; lowering polyphony; 100 rapid steals never lose a note; choke; phase modes; mixer ramps; extreme settings stay finite; deterministic renders; sanitising; reset |
 
 **Plugin test:** parameter defaults produce exactly the engine's default
 patch.
@@ -615,7 +693,17 @@ checks set Filter Type to Off, so they test the oscillators alone.
     That leaves the stack a few degrees apart: −6.01 dBFS instead of
     −5.98.
   - Unison 2 spread hard left and right gives 1/√2 per side (−15.01 dBFS).
-  - Mono mode, legato mode with glide, and full drift each keep the level. Every check
+  - Mono mode, legato mode with glide, and full drift each keep the level.
+- **Chorus and output checks:**
+  - Chorus mix 0 % is an exact bypass (−12.00 dBFS).
+  - Chorus II fully wet keeps the level: predicted −12.05 dBFS from the wet
+    saturation, measured −12.05.
+  - Ensemble fully wet stays bounded.
+  - A hot patch (4 in-phase unison voices at Volume +6 dB) reads +11.99
+    dBFS unclipped and exactly 0.00 dBFS with Output Clip on.
+- **HQ checks:** HQ keeps an A4 sine's level exactly, and HQ with
+  everything driven (sync, FM, resonance 90 %, full drive, unison 4,
+  ensemble) stays bounded. Every check
 also verifies the note decays to silence after note-off.
 
 **Planned with later phases:**
@@ -623,4 +711,3 @@ also verifies the note decays to silence after note-off.
 - Legato note stack.
 - Chorus at mix 0 is bit-identical to dry.
 - A golden-render checksum.
-- An `#[ignore]` CPU benchmark.

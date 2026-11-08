@@ -13,3 +13,4 @@ crate-type = ["cdylib", "lib"]
 nih_plug.workspace = true
 nih_plug_egui.workspace = true
 dsp-core.workspace = true
+dragon-ui.workspace = true

@@ -9,7 +9,8 @@ dragon-vst/
 ├── build2lynx.sh         test + build + smoke-test + install (see tools.md)
 ├── .cargo/config.toml    `cargo xtask` alias
 ├── crates/
-│   └── dsp-core/         host-independent DSP (EQ filters, synth engine), unit-tested
+│   ├── dsp-core/         host-independent DSP (EQ filters, synth engine), unit-tested
+│   └── dragon-ui/        shared egui widgets (knob, panels, pills) and palette
 ├── vst/
 │   ├── dragon_24eq/    the 24-band EQ plugin (nih-plug + egui)
 │   ├── dragon_threeq/  the 3-band EQ plugin (same structure)
@@ -37,6 +38,10 @@ package name. `build2lynx.sh` relies on that.
               parameters (atomics + smoothers)
 ```
 
+- **`dragon-ui`** holds the editor pieces every plugin shares: the rotary
+  `Knob`, the palette (`theme`), titled `panel`s and ON/OFF pills
+  (`widgets`). Plugins keep only their own colour meanings, such as the
+  EQs' band colours, in their `theme.rs`.
 - **`dsp-core`** has no dependency on nih-plug. Anything that can be tested
   without a host (filter design, later analyzers and FIR design) goes here.
   Other plugins can reuse it.

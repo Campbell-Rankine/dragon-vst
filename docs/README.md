@@ -6,6 +6,7 @@
 | [dragon_24eq.md](dragon_24eq.md) | The Dragon 24EQ plugin: parameters, signal flow, editor, IDs |
 | [dragon_threeq.md](dragon_threeq.md) | The Dragon ThreeQ plugin: three bands, parameters, editor, IDs |
 | [dragon_waave.md](dragon_waave.md) | The Dragon Waave synth: design, engine API, parameters, IDs, build plan and status |
+| [dragon_waave_ui.md](dragon_waave_ui.md) | The Dragon Waave editor: layout, styling, displays, shared UI crate, build plan |
 | [dsp.md](dsp.md) | The filter maths in `dsp-core` and how it's tested |
 | [tools.md](tools.md) | `build2lynx.sh`, `clap-smoke`, `xtask`, API docs |
 | [troubleshooting.md](troubleshooting.md) | Plugin-loading problems and how to diagnose them |

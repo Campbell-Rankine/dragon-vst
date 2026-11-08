@@ -9,11 +9,13 @@
 
 use dsp_core::synth::filter::{HPF_OFF_HZ, MAX_DRIVE_DB};
 use dsp_core::synth::{
-    EnvSettings, FilterModel, GlideMode, LfoMode, LfoRoutes, LfoSettings, LfoShape, ModDest, ModSlot, ModSource,
-    Retrigger, VoiceMode, VoiceSettings, MAX_UNISON, MOD_SLOTS, FilterSettings, NoiseColor, NoiseSettings, OscSettings, Patch, PhaseMode, SubOctave, SubSettings, SubWave, Waveform,
-    MAX_CROSS_MOD, MAX_VOICES,
+    ChorusMode, ChorusSettings, EnvSettings, FilterModel, FilterSettings, GlideMode, LfoMode, LfoRoutes, LfoSettings,
+    LfoShape, ModDest, ModSlot, ModSource, NoiseColor, NoiseSettings, OscSettings, Patch, PhaseMode, Retrigger,
+    SubOctave, SubSettings, SubWave, VoiceMode, VoiceSettings, Waveform, MAX_CROSS_MOD, MAX_UNISON, MAX_VOICES,
+    MOD_SLOTS,
 };
 use nih_plug::prelude::*;
+use nih_plug_egui::EguiState;
 use std::sync::Arc;
 
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
@@ -156,10 +158,18 @@ impl From<FilterTypeParam> for FilterModel {
 
 /// A cutoff frequency, 20 Hz upward, with a log-feeling knob.
 fn cutoff_param(name: &str, default: f32, max: f32) -> FloatParam {
-    FloatParam::new(name, default, FloatRange::Skewed { min: 20.0, max, factor: FloatRange::skew_factor(-2.2) })
-        .with_smoother(SmoothingStyle::Logarithmic(20.0))
-        .with_value_to_string(formatters::v2s_f32_hz_then_khz(1))
-        .with_string_to_value(formatters::s2v_f32_hz_then_khz())
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Skewed {
+            min: 20.0,
+            max,
+            factor: FloatRange::skew_factor(-2.2),
+        },
+    )
+    .with_smoother(SmoothingStyle::Logarithmic(20.0))
+    .with_value_to_string(formatters::v2s_f32_hz_then_khz(1))
+    .with_string_to_value(formatters::s2v_f32_hz_then_khz())
 }
 
 /// A percentage stored as a fraction, over `min..=max` (e.g. -1..1 = -100..100 %).
@@ -352,18 +362,31 @@ impl LfoParams {
             rate: FloatParam::new(
                 format!("{name} Rate"),
                 d.rate,
-                FloatRange::Skewed { min: 0.01, max: 50.0, factor: FloatRange::skew_factor(-2.5) },
+                FloatRange::Skewed {
+                    min: 0.01,
+                    max: 50.0,
+                    factor: FloatRange::skew_factor(-2.5),
+                },
             )
             .with_unit(" Hz")
             .with_value_to_string(formatters::v2s_f32_rounded(2)),
             sync: BoolParam::new(format!("{name} Sync"), false),
             division: EnumParam::new(format!("{name} Division"), Division::Quarter),
-            phase: FloatParam::new(format!("{name} Phase"), d.phase, FloatRange::Linear { min: 0.0, max: 1.0 })
-                .with_unit("°")
-                .with_value_to_string(Arc::new(|v| format!("{:.0}", v * 360.0)))
-                .with_string_to_value(Arc::new(|s| {
-                    s.trim().trim_end_matches('°').trim().parse::<f32>().ok().map(|deg| (deg / 360.0).clamp(0.0, 1.0))
-                })),
+            phase: FloatParam::new(
+                format!("{name} Phase"),
+                d.phase,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_unit("°")
+            .with_value_to_string(Arc::new(|v| format!("{:.0}", v * 360.0)))
+            .with_string_to_value(Arc::new(|s| {
+                s.trim()
+                    .trim_end_matches('°')
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .map(|deg| (deg / 360.0).clamp(0.0, 1.0))
+            })),
             delay: time_param(format!("{name} Delay"), d.delay, 0.0, 10.0),
             fade: time_param(format!("{name} Fade In"), d.fade, 0.0, 10.0),
             mode: EnumParam::new(format!("{name} Mode"), mode),
@@ -371,10 +394,14 @@ impl LfoParams {
     }
 
     /// Settings at `bpm` (used when synced).
-    fn settings(&self, bpm: f32) -> LfoSettings {
+    pub(crate) fn settings(&self, bpm: f32) -> LfoSettings {
         LfoSettings {
             shape: self.shape.value().into(),
-            rate: if self.sync.value() { self.division.value().hz(bpm) } else { self.rate.value() },
+            rate: if self.sync.value() {
+                self.division.value().hz(bpm)
+            } else {
+                self.rate.value()
+            },
             phase: self.phase.value(),
             delay: self.delay.value(),
             fade: self.fade.value(),
@@ -438,11 +465,17 @@ impl SourceParam {
     ];
 
     fn to_engine(self) -> ModSource {
-        Self::ALL.iter().find(|(p, _)| *p == self).map_or(ModSource::None, |(_, s)| *s)
+        Self::ALL
+            .iter()
+            .find(|(p, _)| *p == self)
+            .map_or(ModSource::None, |(_, s)| *s)
     }
 
     fn from_engine(s: ModSource) -> Self {
-        Self::ALL.iter().find(|(_, e)| *e == s).map_or(SourceParam::None, |(p, _)| *p)
+        Self::ALL
+            .iter()
+            .find(|(_, e)| *e == s)
+            .map_or(SourceParam::None, |(p, _)| *p)
     }
 }
 
@@ -536,11 +569,17 @@ impl DestParam {
     ];
 
     fn to_engine(self) -> ModDest {
-        Self::ALL.iter().find(|(p, _)| *p == self).map_or(ModDest::None, |(_, d)| *d)
+        Self::ALL
+            .iter()
+            .find(|(p, _)| *p == self)
+            .map_or(ModDest::None, |(_, d)| *d)
     }
 
     fn from_engine(d: ModDest) -> Self {
-        Self::ALL.iter().find(|(_, e)| *e == d).map_or(DestParam::None, |(p, _)| *p)
+        Self::ALL
+            .iter()
+            .find(|(_, e)| *e == d)
+            .map_or(DestParam::None, |(p, _)| *p)
     }
 }
 
@@ -570,6 +609,20 @@ pub enum RetriggerParam {
     #[id = "zero"]
     #[name = "From Zero"]
     FromZero,
+}
+
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ChorusModeParam {
+    #[id = "off"]
+    Off,
+    #[id = "i"]
+    #[name = "I"]
+    One,
+    #[id = "ii"]
+    #[name = "II"]
+    Two,
+    #[id = "ensemble"]
+    Ensemble,
 }
 
 /// One mod matrix slot. Nested with an id prefix (`mod1_` .. `mod6_`).
@@ -608,21 +661,29 @@ impl ModSlotParams {
 /// A time in seconds over `min..=max`, skewed so short times get most of
 /// the travel, shown as ms below 1 s.
 fn time_param(name: String, default: f32, min: f32, max: f32) -> FloatParam {
-    FloatParam::new(name, default, FloatRange::Skewed { min, max, factor: FloatRange::skew_factor(-2.5) })
-        .with_value_to_string(Arc::new(|v| {
-            if v < 1.0 {
-                format!("{:.1} ms", v * 1_000.0)
-            } else {
-                format!("{v:.2} s")
-            }
-        }))
-        .with_string_to_value(Arc::new(|s| {
-            let s = s.trim().to_ascii_lowercase();
-            match s.strip_suffix("ms") {
-                Some(ms) => ms.trim().parse::<f32>().ok().map(|v| v / 1_000.0),
-                None => s.trim_end_matches('s').trim().parse().ok(),
-            }
-        }))
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Skewed {
+            min,
+            max,
+            factor: FloatRange::skew_factor(-2.5),
+        },
+    )
+    .with_value_to_string(Arc::new(|v| {
+        if v < 1.0 {
+            format!("{:.1} ms", v * 1_000.0)
+        } else {
+            format!("{v:.2} s")
+        }
+    }))
+    .with_string_to_value(Arc::new(|s| {
+        let s = s.trim().to_ascii_lowercase();
+        match s.strip_suffix("ms") {
+            Some(ms) => ms.trim().parse::<f32>().ok().map(|v| v / 1_000.0),
+            None => s.trim_end_matches('s').trim().parse().ok(),
+        }
+    }))
 }
 
 /// One envelope's parameters. Nested with an id prefix (`env1_`, `env2_`).
@@ -666,7 +727,7 @@ impl EnvParams {
         }
     }
 
-    fn settings(&self, steps: Read) -> EnvSettings {
+    pub(crate) fn settings(&self, steps: Read) -> EnvSettings {
         EnvSettings {
             delay: self.delay.value(),
             attack: self.attack.value(),
@@ -743,12 +804,23 @@ impl OscParams {
         Self {
             wave: EnumParam::new(format!("{name} Wave"), WaveParam::Saw),
             octave: EnumParam::new(format!("{name} Octave"), footage),
-            semitone: IntParam::new(format!("{name} Semitone"), defaults.semitone as i32, IntRange::Linear { min: -12, max: 12 })
-                .with_unit(" st"),
-            fine: FloatParam::new(format!("{name} Fine"), defaults.fine, FloatRange::Linear { min: -100.0, max: 100.0 })
-                .with_smoother(SmoothingStyle::Linear(10.0))
-                .with_unit(" ct")
-                .with_step_size(0.1),
+            semitone: IntParam::new(
+                format!("{name} Semitone"),
+                defaults.semitone as i32,
+                IntRange::Linear { min: -12, max: 12 },
+            )
+            .with_unit(" st"),
+            fine: FloatParam::new(
+                format!("{name} Fine"),
+                defaults.fine,
+                FloatRange::Linear {
+                    min: -100.0,
+                    max: 100.0,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(10.0))
+            .with_unit(" ct")
+            .with_step_size(0.1),
             pulse_width: FloatParam::new(
                 format!("{name} Pulse Width"),
                 defaults.pulse_width,
@@ -778,6 +850,10 @@ impl OscParams {
 
 #[derive(Params)]
 pub struct DragonWaaveParams {
+    /// Editor window size, persisted with the plugin state.
+    #[persist = "editor-state"]
+    pub editor_state: Arc<EguiState>,
+
     #[nested(id_prefix = "osc1", group = "Osc 1")]
     pub osc1: OscParams,
     #[nested(id_prefix = "osc2", group = "Osc 2")]
@@ -880,6 +956,22 @@ pub struct DragonWaaveParams {
     #[id = "voice_drift"]
     pub drift: FloatParam,
 
+    #[id = "chorus_mode"]
+    pub chorus_mode: EnumParam<ChorusModeParam>,
+    #[id = "chorus_rate"]
+    pub chorus_rate: FloatParam,
+    #[id = "chorus_depth"]
+    pub chorus_depth: FloatParam,
+    #[id = "chorus_mix"]
+    pub chorus_mix: FloatParam,
+    #[id = "chorus_tone"]
+    pub chorus_tone: FloatParam,
+    #[id = "out_clip"]
+    pub output_clip: BoolParam,
+    /// Run the voices at 2x the sample rate.
+    #[id = "hq"]
+    pub hq: BoolParam,
+
     #[id = "polyphony"]
     pub polyphony: IntParam,
 
@@ -892,6 +984,7 @@ impl Default for DragonWaaveParams {
     fn default() -> Self {
         let d = Patch::default();
         Self {
+            editor_state: EguiState::from_size(crate::editor::WIDTH, crate::editor::HEIGHT),
             osc1: OscParams::new("Osc 1", &d.osc1),
             osc2: OscParams::new("Osc 2", &d.osc2),
             osc2_sync: BoolParam::new("Osc 2 Sync", d.osc2_sync),
@@ -899,7 +992,11 @@ impl Default for DragonWaaveParams {
                 "Osc 2 Cross Mod",
                 d.cross_mod,
                 // Skewed so the subtle low end (gentle FM sheen) gets most of the travel.
-                FloatRange::Skewed { min: 0.0, max: MAX_CROSS_MOD, factor: FloatRange::skew_factor(-1.5) },
+                FloatRange::Skewed {
+                    min: 0.0,
+                    max: MAX_CROSS_MOD,
+                    factor: FloatRange::skew_factor(-1.5),
+                },
             )
             .with_smoother(SmoothingStyle::Linear(10.0))
             .with_value_to_string(formatters::v2s_f32_rounded(2)),
@@ -912,10 +1009,17 @@ impl Default for DragonWaaveParams {
             filter_type: EnumParam::new("Filter Type", FilterTypeParam::Ladder),
             cutoff: cutoff_param("Filter Cutoff", d.filter.cutoff, 20_000.0),
             resonance: percent_param("Filter Resonance", d.filter.resonance, 0.0, 1.0),
-            drive: FloatParam::new("Filter Drive", d.filter.drive_db, FloatRange::Linear { min: 0.0, max: MAX_DRIVE_DB })
-                .with_smoother(SmoothingStyle::Linear(10.0))
-                .with_unit(" dB")
-                .with_step_size(0.1),
+            drive: FloatParam::new(
+                "Filter Drive",
+                d.filter.drive_db,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: MAX_DRIVE_DB,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(10.0))
+            .with_unit(" dB")
+            .with_step_size(0.1),
             key_track: percent_param("Filter Key Track", d.filter.key_track, 0.0, 2.0),
             velocity_track: percent_param("Filter Velocity", d.filter.velocity, -1.0, 1.0),
             bass_comp: percent_param("Filter Bass Comp", d.filter.bass_comp, 0.0, 1.0),
@@ -932,7 +1036,13 @@ impl Default for DragonWaaveParams {
                 }))
                 .with_string_to_value({
                     let hz = formatters::s2v_f32_hz_then_khz();
-                    Arc::new(move |s| if s.trim().eq_ignore_ascii_case("off") { Some(HPF_OFF_HZ) } else { hz(s) })
+                    Arc::new(move |s| {
+                        if s.trim().eq_ignore_ascii_case("off") {
+                            Some(HPF_OFF_HZ)
+                        } else {
+                            hz(s)
+                        }
+                    })
                 }),
             amp_env: EnvParams::new("Amp", &d.amp_env),
             filter_env: EnvParams::new("Filter Env", &d.filter_env),
@@ -948,20 +1058,70 @@ impl Default for DragonWaaveParams {
             mod4: ModSlotParams::new(4, &d.mod_slots[3]),
             mod5: ModSlotParams::new(5, &d.mod_slots[4]),
             mod6: ModSlotParams::new(6, &d.mod_slots[5]),
-            bend_range: IntParam::new("Pitch Bend Range", d.bend_range as i32, IntRange::Linear { min: 0, max: 24 })
-                .with_unit(" st"),
+            bend_range: IntParam::new(
+                "Pitch Bend Range",
+                d.bend_range as i32,
+                IntRange::Linear { min: 0, max: 24 },
+            )
+            .with_unit(" st"),
             voice_mode: EnumParam::new("Voice Mode", VoiceModeParam::Poly),
-            unison: IntParam::new("Unison", d.voice.unison as i32, IntRange::Linear { min: 1, max: MAX_UNISON as i32 }),
-            detune: FloatParam::new("Unison Detune", d.voice.detune, FloatRange::Linear { min: 0.0, max: 100.0 })
-                .with_smoother(SmoothingStyle::Linear(10.0))
-                .with_unit(" ct")
-                .with_step_size(0.1),
+            unison: IntParam::new(
+                "Unison",
+                d.voice.unison as i32,
+                IntRange::Linear {
+                    min: 1,
+                    max: MAX_UNISON as i32,
+                },
+            ),
+            detune: FloatParam::new(
+                "Unison Detune",
+                d.voice.detune,
+                FloatRange::Linear { min: 0.0, max: 100.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(10.0))
+            .with_unit(" ct")
+            .with_step_size(0.1),
             spread: percent_param("Unison Spread", d.voice.spread, 0.0, 1.0),
             glide: time_param("Glide".into(), d.voice.glide, 0.0, 10.0),
             glide_mode: EnumParam::new("Glide Mode", GlideModeParam::Always),
             retrigger: EnumParam::new("Retrigger", RetriggerParam::FromCurrent),
             drift: percent_param("Drift", d.voice.drift, 0.0, 1.0),
-            polyphony: IntParam::new("Polyphony", d.polyphony as i32, IntRange::Linear { min: 1, max: MAX_VOICES as i32 }),
+            chorus_mode: EnumParam::new("Chorus Mode", ChorusModeParam::Off),
+            chorus_rate: FloatParam::new(
+                "Chorus Rate",
+                d.chorus.rate,
+                FloatRange::Skewed {
+                    min: 0.1,
+                    max: 4.0,
+                    factor: FloatRange::skew_factor(-1.0),
+                },
+            )
+            .with_unit("%")
+            .with_value_to_string(formatters::v2s_f32_percentage(0))
+            .with_string_to_value(formatters::s2v_f32_percentage()),
+            chorus_depth: percent_param("Chorus Depth", d.chorus.depth, 0.0, dsp_core::synth::chorus::MAX_DEPTH),
+            chorus_mix: percent_param("Chorus Mix", d.chorus.mix, 0.0, 1.0),
+            chorus_tone: FloatParam::new(
+                "Chorus Tone",
+                d.chorus.tone,
+                FloatRange::Skewed {
+                    min: 1_000.0,
+                    max: 20_000.0,
+                    factor: FloatRange::skew_factor(-1.0),
+                },
+            )
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz(1))
+            .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
+            output_clip: BoolParam::new("Output Clip", d.output_clip),
+            hq: BoolParam::new("HQ (2x Oversampling)", d.hq),
+            polyphony: IntParam::new(
+                "Polyphony",
+                d.polyphony as i32,
+                IntRange::Linear {
+                    min: 1,
+                    max: MAX_VOICES as i32,
+                },
+            ),
             volume: FloatParam::new(
                 "Volume",
                 d.volume,
@@ -980,6 +1140,11 @@ impl Default for DragonWaaveParams {
 }
 
 impl DragonWaaveParams {
+    /// The matrix slots in order.
+    pub fn mod_slots(&self) -> [&ModSlotParams; MOD_SLOTS] {
+        [&self.mod1, &self.mod2, &self.mod3, &self.mod4, &self.mod5, &self.mod6]
+    }
+
     /// The patch at tempo `bpm`, with smoothed values read as `steps` says.
     pub fn patch(&self, steps: Read, bpm: f32) -> Patch {
         Patch {
@@ -1057,6 +1222,20 @@ impl DragonWaaveParams {
                 },
                 drift: smoothed(&self.drift, steps),
             },
+            chorus: ChorusSettings {
+                mode: match self.chorus_mode.value() {
+                    ChorusModeParam::Off => ChorusMode::Off,
+                    ChorusModeParam::One => ChorusMode::One,
+                    ChorusModeParam::Two => ChorusMode::Two,
+                    ChorusModeParam::Ensemble => ChorusMode::Ensemble,
+                },
+                rate: self.chorus_rate.value(),
+                depth: smoothed(&self.chorus_depth, steps),
+                mix: smoothed(&self.chorus_mix, steps),
+                tone: self.chorus_tone.value(),
+            },
+            output_clip: self.output_clip.value(),
+            hq: self.hq.value(),
             polyphony: self.polyphony.value() as usize,
             volume: smoothed(&self.volume, steps),
         }
@@ -1078,6 +1257,9 @@ mod tests {
 
     #[test]
     fn defaults_match_the_engine() {
-        assert_eq!(DragonWaaveParams::default().patch(Read::Target, 120.0), Patch::default());
+        assert_eq!(
+            DragonWaaveParams::default().patch(Read::Target, 120.0),
+            Patch::default()
+        );
     }
 }

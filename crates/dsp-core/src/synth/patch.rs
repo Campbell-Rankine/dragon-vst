@@ -299,6 +299,36 @@ pub enum Retrigger {
     FromZero,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChorusMode {
+    Off,
+    /// Juno-style chorus: wide and gentle.
+    One,
+    /// Juno-style chorus: faster and deeper.
+    Two,
+    /// Three-phase string-machine / Polysix ensemble.
+    Ensemble,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChorusSettings {
+    pub mode: ChorusMode,
+    /// Multiplier on the mode's own rate, 0.1..=4.
+    pub rate: f32,
+    /// Multiplier on the mode's own depth, 0..=2.
+    pub depth: f32,
+    /// 0 = dry .. 1 = wet only (0.5 = equal parts).
+    pub mix: f32,
+    /// Wet-path low-pass, 1..=20 kHz (BBDs are band-limited).
+    pub tone: f32,
+}
+
+impl Default for ChorusSettings {
+    fn default() -> Self {
+        Self { mode: ChorusMode::Off, rate: 1.0, depth: 1.0, mix: 0.5, tone: 8_000.0 }
+    }
+}
+
 /// Cents of fixed per-voice pitch offset at full drift (voice tolerance).
 pub const DRIFT_TOLERANCE_CENTS: f32 = 3.0;
 /// Octaves of fixed per-voice cutoff offset at full drift.
@@ -380,6 +410,12 @@ pub struct Patch {
     /// Pitch bend range, 0..=24 semitones each way.
     pub bend_range: f32,
     pub voice: VoiceSettings,
+    pub chorus: ChorusSettings,
+    /// Soft-clip the output (transparent below 0.8, never past full scale).
+    pub output_clip: bool,
+    /// HQ: run the voices at 2x the sample rate (less aliasing from drive,
+    /// sync, FM and high resonance; about twice the CPU).
+    pub hq: bool,
     /// Voices that may sound at once, 1..=[`MAX_VOICES`].
     pub polyphony: usize,
     /// Master output gain (linear).
@@ -471,6 +507,9 @@ impl Default for Patch {
             },
             bend_range: 2.0,
             voice: VoiceSettings::default(),
+            chorus: ChorusSettings::default(),
+            output_clip: false,
+            hq: false,
             polyphony: 8,
             volume: crate::db_to_gain(-12.0),
         }
@@ -527,6 +566,15 @@ impl Patch {
                 drift: self.voice.drift.clamp(0.0, 1.0),
                 ..self.voice
             },
+            chorus: ChorusSettings {
+                rate: self.chorus.rate.clamp(0.1, 4.0),
+                depth: self.chorus.depth.clamp(0.0, super::chorus::MAX_DEPTH),
+                mix: self.chorus.mix.clamp(0.0, 1.0),
+                tone: self.chorus.tone.clamp(1_000.0, 20_000.0),
+                ..self.chorus
+            },
+            output_clip: self.output_clip,
+            hq: self.hq,
             polyphony: self.polyphony.clamp(1, MAX_VOICES),
             volume: self.volume.max(0.0),
         }

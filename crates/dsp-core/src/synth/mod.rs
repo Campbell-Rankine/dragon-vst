@@ -13,10 +13,12 @@
 //! See `docs/dragon_waave.md` for the design and the build plan.
 
 mod alloc;
+pub mod chorus;
 pub mod env;
 pub mod filter;
 pub mod lfo;
 pub mod matrix;
+pub mod oversample;
 pub mod blep;
 pub mod noise;
 pub mod osc;
@@ -28,7 +30,7 @@ pub use osc::MAX_CROSS_MOD;
 pub use patch::{
     EnvSettings, FilterModel, FilterSettings, LfoMode, LfoRoutes, LfoSettings, LfoShape, ENV_AMOUNT_OCTAVES,
     LFO_CUTOFF_OCTAVES, LFO_PITCH_SEMITONES, LFO_PWM_RANGE, ModDest, ModSlot, ModSource, MOD_SLOTS, GlideMode,
-    Retrigger, VoiceMode, VoiceSettings, DRIFT_TOLERANCE_CENTS, MAX_UNISON, KEY_TRACK_CENTER, VELOCITY_TRACK_OCTAVES, 
+    Retrigger, VoiceMode, VoiceSettings, ChorusMode, ChorusSettings, DRIFT_TOLERANCE_CENTS, MAX_UNISON, KEY_TRACK_CENTER, VELOCITY_TRACK_OCTAVES, 
     NoiseColor, NoiseSettings, OscSettings, Patch, PhaseMode, SubOctave, SubSettings, SubWave, Waveform,
     MAX_VOICES,
 };
@@ -75,6 +77,10 @@ pub struct VoiceEnd {
 
 pub struct Synth {
     sample_rate: f32,
+    /// The rate the voices run at: the sample rate, or twice it in HQ.
+    voice_rate: f32,
+    /// Halfband decimators (left, right) for HQ.
+    decimators: [oversample::Halfband; 2],
     patch: Patch,
     voices: [Voice; POOL],
     next_age: u64,
@@ -116,13 +122,24 @@ pub struct Synth {
     n_keys: usize,
     /// Pitch of the last note played, for glide.
     last_pitch: Option<f32>,
+    chorus: chorus::Chorus,
+    chorus_mix: Ramp,
+    chorus_depth: Ramp,
+    chorus_tone_g: f32,
 }
 
 impl Synth {
-    /// A synth with the default patch. The only place that sets up storage.
+    /// A synth with the default patch. The only place that allocates (the
+    /// chorus delay lines).
     pub fn new(sample_rate: f32) -> Self {
+        Self::with_chorus(sample_rate, chorus::Chorus::new(sample_rate))
+    }
+
+    fn with_chorus(sample_rate: f32, chorus: chorus::Chorus) -> Self {
         let mut synth = Self {
             sample_rate,
+            voice_rate: sample_rate,
+            decimators: [oversample::Halfband::new(); 2],
             patch: Patch::default(),
             voices: std::array::from_fn(|i| Voice::new(0x1234_5678 ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9))),
             next_age: 0,
@@ -158,6 +175,10 @@ impl Synth {
             keys: [Key::default(); KEY_STACK],
             n_keys: 0,
             last_pitch: None,
+            chorus,
+            chorus_mix: Ramp::default(),
+            chorus_depth: Ramp::default(),
+            chorus_tone_g: 0.0,
         };
         synth.apply_patch(&Patch::default(), 0);
         synth.restart_mono_lfos();
@@ -188,6 +209,12 @@ impl Synth {
         let p = patch.sanitized();
         let old = self.patch;
         self.patch = p;
+        let voice_rate = if p.hq { 2.0 * self.sample_rate } else { self.sample_rate };
+        let rate_changed = voice_rate != self.voice_rate;
+        if rate_changed {
+            self.voice_rate = voice_rate;
+            self.decimators.iter_mut().for_each(oversample::Halfband::reset);
+        }
 
         self.osc1_level.set_target(p.osc1.level, ramp);
         self.osc2_level.set_target(p.osc2.level, ramp);
@@ -203,8 +230,11 @@ impl Synth {
         self.bass_comp.set_target(p.filter.bass_comp, ramp);
         self.hpf_oct.set_target(p.filter.hpf_cutoff.log2(), ramp);
         self.env_amount.set_target(p.filter.env_amount, ramp);
+        self.chorus_mix.set_target(p.chorus.mix, ramp);
+        self.chorus_depth.set_target(p.chorus.depth, ramp);
+        self.chorus_tone_g = self.chorus.tone_g(&p.chorus);
         // Times apply at once (they set rates); sustain levels ramp.
-        self.envs = Envs::new(&p, self.sample_rate);
+        self.envs = Envs::new(&p, self.voice_rate);
         self.amp_sustain.set_target(p.amp_env.sustain, ramp);
         self.filter_sustain.set_target(p.filter_env.sustain, ramp);
         self.mod_sustain.set_target(p.mod_env.sustain, ramp);
@@ -223,13 +253,14 @@ impl Synth {
             }
             self.n_keys = 0;
         }
-        if p.osc1.pitch_semitones() != old.osc1.pitch_semitones()
+        if rate_changed
+            || p.osc1.pitch_semitones() != old.osc1.pitch_semitones()
             || p.osc2.pitch_semitones() != old.osc2.pitch_semitones()
             || p.voice.detune != old.voice.detune
             || p.voice.drift != old.voice.drift
         {
             for v in self.voices.iter_mut().filter(|v| v.state != VoiceState::Idle) {
-                v.retune(&p, self.sample_rate);
+                v.retune(&p, self.voice_rate);
             }
         }
         if p.filter.model != old.filter.model {
@@ -290,7 +321,7 @@ impl Synth {
                 self.next_age,
                 &self.patch,
                 &self.envs,
-                self.sample_rate,
+                self.voice_rate,
                 place,
                 glide_from,
             );
@@ -315,7 +346,7 @@ impl Synth {
                     glide,
                     &self.patch,
                     &self.envs,
-                    self.sample_rate,
+                    self.voice_rate,
                 );
             }
         }
@@ -410,6 +441,36 @@ impl Synth {
         debug_assert_eq!(left.len(), right.len());
         let shapes = Shapes::from_patch(&self.patch);
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let (sum_l, sum_r) = if self.patch.hq {
+                let (a_l, a_r) = self.voices_sample(&shapes);
+                let (b_l, b_r) = self.voices_sample(&shapes);
+                (self.decimators[0].process(a_l, b_l), self.decimators[1].process(a_r, b_r))
+            } else {
+                self.voices_sample(&shapes)
+            };
+            let volume = self.volume.tick();
+            let (mut out_l, mut out_r) = (sum_l * volume, sum_r * volume);
+            let chorus_now = chorus::ChorusNow {
+                mode: self.patch.chorus.mode,
+                rate: self.patch.chorus.rate,
+                depth: self.chorus_depth.tick(),
+                mix: self.chorus_mix.tick(),
+                tone_g: self.chorus_tone_g,
+            };
+            self.chorus.process(&mut out_l, &mut out_r, &chorus_now);
+            if self.patch.output_clip {
+                out_l = chorus::soft_clip(out_l);
+                out_r = chorus::soft_clip(out_r);
+            }
+            *l = out_l;
+            *r = out_r;
+        }
+    }
+
+    /// One sample of every voice, summed and panned, at the voice rate.
+    #[inline]
+    fn voices_sample(&mut self, shapes: &Shapes) -> (f32, f32) {
+        {
             let mix = Mix {
                 osc1: self.osc1_level.tick(),
                 osc2: self.osc2_level.tick(),
@@ -420,7 +481,6 @@ impl Synth {
                 ring: self.ring_level.tick(),
                 cross_mod: self.cross_mod.tick(),
             };
-            let volume = self.volume.tick();
             let filter = self.filter_now();
             self.envs.amp.sustain = self.amp_sustain.tick();
             self.envs.filter.sustain = self.filter_sustain.tick();
@@ -432,7 +492,7 @@ impl Synth {
                 if self.voices[i].state == VoiceState::Idle {
                     continue;
                 }
-                let y = self.voices[i].next(&shapes, &mix, &filter, &self.envs, &modulation);
+                let y = self.voices[i].next(shapes, &mix, &filter, &self.envs, &modulation);
                 // Balance law: unity in the centre, the far side fades out.
                 let pan = self.voices[i].pan;
                 sum_l += y * (1.0 - pan).min(1.0);
@@ -441,8 +501,7 @@ impl Synth {
                     self.record_end(i);
                 }
             }
-            *l = sum_l * volume;
-            *r = sum_r * volume;
+            (sum_l, sum_r)
         }
     }
 
@@ -462,7 +521,11 @@ impl Synth {
     /// Silence everything and forget pending reports.
     pub fn reset(&mut self) {
         let patch = self.patch;
-        *self = Self::new(self.sample_rate);
+        // Reuse the chorus buffers: hosts may reset from the audio thread,
+        // where allocating isn't allowed.
+        let mut chorus = std::mem::replace(&mut self.chorus, chorus::Chorus::empty());
+        chorus.clear();
+        *self = Self::with_chorus(self.sample_rate, chorus);
         self.apply_patch(&patch, 0);
         self.restart_mono_lfos();
     }
@@ -470,7 +533,7 @@ impl Synth {
     /// Advance the shared LFOs and LFO 1's route ramps one sample.
     #[inline]
     fn mod_now(&mut self) -> ModNow {
-        let sr = self.sample_rate;
+        let sr = self.voice_rate;
         let mut lfo_now = |i: usize, s: &LfoSettings| {
             let dt = s.rate / sr;
             let mono_value = if s.mode == LfoMode::Mono { self.mono_lfos[i].tick(s.shape, dt) } else { 0.0 };
@@ -516,8 +579,8 @@ impl Synth {
             k: filter::model_k(model, resonance),
             bass_comp: self.bass_comp.tick(),
             drive: filter::Drive::new(drive_db),
-            hpf: filter::hpf_coeff(hpf_oct.exp2(), self.sample_rate),
-            sample_rate: self.sample_rate,
+            hpf: filter::hpf_coeff(hpf_oct.exp2(), self.voice_rate),
+            sample_rate: self.voice_rate,
             resonance,
             drive_db,
             hpf_oct,
@@ -1134,6 +1197,148 @@ mod tests {
         s.note_on(None, 0, 67, 1.0);
         run(&mut s, 10);
         assert_eq!(s.voices.iter().filter(|v| v.state == VoiceState::Held).count(), 1);
+    }
+
+    fn render_stereo(s: &mut Synth, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
+        s.render(&mut l, &mut r);
+        (l, r)
+    }
+
+    #[test]
+    fn chorus_widens_a_centred_note() {
+        for mode in [ChorusMode::One, ChorusMode::Two, ChorusMode::Ensemble] {
+            let mut p = sine_patch();
+            p.volume = 0.25;
+            p.chorus = ChorusSettings { mode, ..p.chorus };
+            let mut s = synth_with(p);
+            s.note_on(None, 0, 69, 1.0);
+            let (l, r) = render_stereo(&mut s, SR as usize);
+            assert!(l.iter().zip(&r).skip(4_800).any(|(a, b)| (a - b).abs() > 0.01), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn output_clip_keeps_a_hot_patch_under_full_scale() {
+        let mut p = sine_patch();
+        p.osc1.phase = PhaseMode::Reset;
+        p.voice = VoiceSettings { unison: 4, detune: 0.0, spread: 0.0, ..p.voice };
+        p.volume = 2.0; // 4 in-phase voices x 1/2 x 2 = 4.0 peak
+        let peak = |p: Patch| {
+            let mut s = synth_with(p);
+            s.note_on(None, 0, 69, 1.0);
+            let (l, r) = render_stereo(&mut s, 9_600);
+            l.iter().chain(&r).fold(0f32, |m, v| m.max(v.abs()))
+        };
+        assert!((peak(p) - 4.0).abs() < 0.01);
+        p.output_clip = true;
+        let clipped = peak(p);
+        // Full scale exactly at most (f32 tanh saturates to 1.0 for big inputs).
+        assert!(clipped <= 1.0 && clipped > 0.95, "{clipped}");
+    }
+
+    #[test]
+    fn reset_reuses_the_chorus_buffers() {
+        let mut s = synth_with(Patch { chorus: ChorusSettings { mode: ChorusMode::Two, ..Patch::default().chorus }, ..sine_patch() });
+        s.note_on(None, 0, 69, 1.0);
+        render_stereo(&mut s, 1_000);
+        let rate = s.chorus.sample_rate();
+        s.reset();
+        assert_eq!(s.chorus.sample_rate(), rate, "same chorus, not an empty one");
+        let (l, r) = render_stereo(&mut s, 1_000);
+        assert!(l.iter().chain(&r).all(|&v| v == 0.0), "silent after reset");
+        assert_eq!(s.patch().chorus.mode, ChorusMode::Two);
+    }
+
+    /// C8 (4186 Hz) through maximum drive: odd harmonics. At 48 kHz the
+    /// 7th (29.3 kHz) and 9th (37.7 kHz) fold back to 18.7 and 10.3 kHz,
+    /// inharmonic aliases; HQ must remove them and leave the level alone.
+    #[test]
+    fn hq_removes_drive_aliases() {
+        use super::osc::tests::tone_power;
+        let mut p = sine_patch();
+        p.osc1.phase = PhaseMode::Reset;
+        p.filter.drive_db = filter::MAX_DRIVE_DB;
+        let f0 = util::note_to_freq(108.0) as f64;
+        let measure = |hq: bool| {
+            let mut s = synth_with(Patch { hq, ..p });
+            s.note_on(None, 0, 108, 1.0);
+            let x = run(&mut s, SR as usize + 4_800);
+            let x = &x[4_800..];
+            let db = |f: f64| 10.0 * tone_power(x, f).log10();
+            (db(f0), db(SR as f64 - 7.0 * f0), db(9.0 * f0 - SR as f64))
+        };
+        let (fund, alias7, alias9) = measure(false);
+        let (fund_hq, alias7_hq, alias9_hq) = measure(true);
+        assert!((fund - fund_hq).abs() < 0.05, "fundamental {fund:.2} vs HQ {fund_hq:.2} dB");
+        assert!(alias7 - alias7_hq > 30.0, "7th alias {alias7:.1} -> {alias7_hq:.1} dB");
+        assert!(alias9 - alias9_hq > 30.0, "9th alias {alias9:.1} -> {alias9_hq:.1} dB");
+    }
+
+    #[test]
+    fn hq_keeps_pitch_and_timing() {
+        // Same note, same envelope times: the voice rate doubles but
+        // everything is scaled for it.
+        let mut p = sine_patch();
+        p.amp_env.attack = 0.1;
+        p.amp_env.attack_curve = 0.0;
+        for hq in [false, true] {
+            let mut s = synth_with(Patch { hq, ..p });
+            s.note_on(None, 0, 69, 1.0);
+            let x = run(&mut s, SR as usize);
+            assert!((measured_freq(&x[9_600..]) - 440.0).abs() < 0.05, "hq {hq}");
+            // Linear 100 ms attack: halfway up at 50 ms (the HQ filter adds ~0.3 ms).
+            // One 440 Hz cycle (109 samples) ending just after 50 ms.
+            let at_50ms = x[2_350..2_459].iter().fold(0f32, |m, v| m.max(v.abs()));
+            assert!((at_50ms - 0.5).abs() < 0.02, "hq {hq}: {at_50ms}");
+        }
+    }
+
+    /// CPU benchmark (run in release: `cargo test -p dsp-core --release
+    /// synth::tests::bench -- --ignored --nocapture`). 16 voices with
+    /// everything on: two oscillators + sub + noise + ring, sync and FM, the
+    /// ladder with drive and resonance, three envelopes, per-voice LFOs, a
+    /// full matrix, drift, and the ensemble.
+    #[test]
+    #[ignore]
+    fn bench() {
+        let mut p = Patch::default();
+        p.osc2 = OscSettings { level: 0.8, ..p.osc2 };
+        p.sub.level = 0.5;
+        p.noise.level = 0.1;
+        p.ring_level = 0.2;
+        p.osc2_sync = true;
+        p.cross_mod = 1.0;
+        p.filter = FilterSettings { cutoff: 1_200.0, resonance: 0.6, drive_db: 6.0, env_amount: 0.3, hpf_cutoff: 80.0, ..p.filter };
+        p.lfo1 = LfoSettings { mode: LfoMode::Poly, ..p.lfo1 };
+        p.lfo1_to = LfoRoutes { pitch: 0.01, pwm: 0.2, cutoff: 0.1 };
+        let all = [ModDest::Cutoff, ModDest::Resonance, ModDest::Pan, ModDest::Osc2Pitch, ModDest::Drive, ModDest::Amp];
+        for (slot, dest) in p.mod_slots.iter_mut().zip(all) {
+            *slot = ModSlot { source: ModSource::Lfo2, dest, amount: 0.05, via: ModSource::Velocity };
+        }
+        p.lfo2.mode = LfoMode::Poly;
+        p.voice.drift = 1.0;
+        p.chorus.mode = ChorusMode::Ensemble;
+        p.polyphony = MAX_VOICES;
+        for hq in [false, true] {
+            p.hq = hq;
+            let mut s = synth_with(p);
+            for n in 0..MAX_VOICES as u8 {
+                s.note_on(None, 0, 40 + n * 2, 0.8);
+            }
+            let secs = 10.0;
+            let (mut l, mut r) = (vec![0.0; 512], vec![0.0; 512]);
+            let start = std::time::Instant::now();
+            for _ in 0..(secs * SR / 512.0) as usize {
+                s.render(&mut l, &mut r);
+            }
+            let took = start.elapsed().as_secs_f64();
+            println!(
+                "bench (hq {hq}): {secs} s of 16 voices in {took:.3} s = {:.1} % of one core ({:.0}x realtime)",
+                100.0 * took / secs as f64,
+                secs as f64 / took
+            );
+        }
     }
 
     #[test]

@@ -9,8 +9,7 @@ on screen at once. Source: [`vst/dragon_threeq/src/`](../vst/dragon_threeq/src/)
 | `lib.rs` | Plugin: per-band runtime state, coefficient updates, stereo routing |
 | `params.rs` | Parameters and their enums (type, slope, stereo placement) |
 | `editor.rs` | egui editor: three band panels, output panel |
-| `knob.rs` | Rotary knob widget (same as Dragon 24EQ's) |
-| `theme.rs` | Colours (same as Dragon 24EQ's) |
+| `theme.rs` | Band colours; the palette, knob and panels come from the shared [`dragon-ui`](../crates/dragon-ui) crate |
 | `smoke-checks.txt` | Audio checks run by `build2lynx.sh` (see [tools.md](tools.md)) |
 
 ## Signal flow

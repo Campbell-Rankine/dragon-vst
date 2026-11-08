@@ -1,12 +1,13 @@
 //! The egui editor: a row of 24 band chips, a panel of knobs for the selected
 //! band, and the output panel.
 
-use crate::knob::Knob;
+use dragon_ui::widgets::{on_toggle, panel, set_bool};
+use dragon_ui::Knob;
 use crate::params::{BandParams, BandSlope, BandType, Dragon24EqParams, NUM_BANDS};
 use crate::theme;
 use dsp_core::FilterType;
 use nih_plug::prelude::*;
-use nih_plug_egui::egui::{self, pos2, vec2, Color32, Sense, Stroke, Ui};
+use nih_plug_egui::egui::{self, vec2, Color32, Sense, Stroke, Ui};
 use nih_plug_egui::{create_egui_editor, EguiState};
 use std::sync::Arc;
 
@@ -79,22 +80,6 @@ fn draw(ui: &mut Ui, params: &Dragon24EqParams, setter: &ParamSetter, state: &mu
     });
 }
 
-/// A titled, peach-bordered panel.
-fn panel(ui: &mut Ui, title: &str, title_color: Color32, add_contents: impl FnOnce(&mut Ui)) {
-    egui::Frame::new()
-        .fill(theme::PANEL)
-        .stroke(Stroke::new(1.5_f32, theme::PEACH))
-        .corner_radius(8.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.label(egui::RichText::new(title).size(13.0).strong().color(title_color));
-                ui.add_space(4.0);
-                ui.horizontal(add_contents);
-            });
-        });
-}
-
 /// A numbered chip for one band: lit in the band's colour when on, peach
 /// outline when selected. Click selects, double-click toggles on/off.
 fn band_chip(ui: &mut Ui, index: usize, band: &BandParams, setter: &ParamSetter, selected: &mut usize) {
@@ -144,29 +129,4 @@ fn band_chip(ui: &mut Ui, index: usize, band: &BandParams, setter: &ParamSetter,
 
 fn band_type_name(t: BandType) -> &'static str {
     BandType::variants()[t.to_index()]
-}
-
-/// A pill-shaped ON/OFF switch for a bool parameter.
-fn on_toggle(ui: &mut Ui, param: &BoolParam, setter: &ParamSetter, color: Color32) {
-    let (rect, response) = ui.allocate_exact_size(vec2(48.0, 22.0), Sense::click());
-    let on = param.value();
-    if response.clicked() {
-        set_bool(setter, param, !on);
-    }
-    let painter = ui.painter();
-    let (fill, text_color) = if on { (color, theme::BACKGROUND) } else { (theme::BACKGROUND, theme::TEXT_DIM) };
-    painter.rect(rect, 11.0, fill, Stroke::new(1.0_f32, if on { color } else { Color32::from_gray(70) }), egui::StrokeKind::Inside);
-    painter.text(
-        pos2(rect.center().x, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        if on { "ON" } else { "OFF" },
-        egui::FontId::proportional(11.0),
-        text_color,
-    );
-}
-
-fn set_bool(setter: &ParamSetter, param: &BoolParam, value: bool) {
-    setter.begin_set_parameter(param);
-    setter.set_parameter(param, value);
-    setter.end_set_parameter(param);
 }

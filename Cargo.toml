@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["xtask", "crates/dsp-core", "vst/dragon_24eq", "vst/dragon_threeq", "vst/dragon_waave", "tools/clap-smoke"]
+members = ["xtask", "crates/dsp-core", "crates/dragon-ui", "vst/dragon_24eq", "vst/dragon_threeq", "vst/dragon_waave", "tools/clap-smoke"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de42101
 nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683" }
 nih_plug_xtask = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683" }
 dsp-core = { path = "crates/dsp-core" }
+dragon-ui = { path = "crates/dragon-ui" }
 
 [profile.release]
 lto = "thin"

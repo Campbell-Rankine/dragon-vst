@@ -91,3 +91,20 @@ unison 2 hard L/R: 1/sqrt2 a side  | --set "Osc 1 Wave=Sine" --set "Filter Type=
 mono mode                          | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Voice Mode=Mono" --min-db -12.02 --max-db -11.99
 legato mode with glide             | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Voice Mode=Legato" --set "Glide=1 s" --min-db -12.02 --max-db -11.99
 full drift keeps the level         | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Drift=100" --min-db -12.02 --max-db -11.99
+
+# Chorus and output (raw sine, filter off). The chorus runs after Volume, so
+# its input is the -12 dBFS sine (amplitude 0.251). Fully wet, that's the
+# same sine delayed (Doppler moves pitch, not level) through the wet path's
+# gentle saturation, 2 tanh(x/2): 20 log10(2 tanh(0.1256)) = -12.05 dBFS.
+chorus mix 0% is a bypass          | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Chorus Mode=II" --set "Chorus Mix=0" --min-db -12.02 --max-db -11.99
+chorus II fully wet keeps level    | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Chorus Mode=II" --set "Chorus Mix=100" --min-db -12.08 --max-db -12.02
+ensemble fully wet stays bounded   | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Chorus Mode=Ensemble" --set "Chorus Mix=100" --min-db -24 --max-db -12.02
+# A hot patch: 4 in-phase unison voices (x2) at Volume +6 dB = +12.0 dBFS
+# (Unison Detune smoothing from 15 ct trims a few hundredths, as above).
+hot patch unclipped: +12 dBFS      | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Osc 1 Phase=Reset" --set "Unison=4" --set "Unison Detune=0" --set "Unison Spread=0" --set "Volume=6" --min-db 11.9 --max-db 12.05
+output clip holds it to 0 dBFS     | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Osc 1 Phase=Reset" --set "Unison=4" --set "Unison Detune=0" --set "Unison Spread=0" --set "Volume=6" --set "Output Clip=On" --min-db -0.5 --max-db 0
+
+# HQ runs the voices at 2x and decimates with a halfband filter that is flat
+# to 20 kHz: the level of an A4 sine must not change.
+HQ keeps the level                 | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "HQ (2x Oversampling)=On" --min-db -12.02 --max-db -11.99
+HQ with everything driven          | --set "Osc 2 Level=100" --set "Osc 2 Sync=On" --set "Osc 2 Cross Mod=3" --set "Filter Resonance=90" --set "Filter Cutoff=2000" --set "Filter Drive=24" --set "Unison=4" --set "Chorus Mode=Ensemble" --set "HQ (2x Oversampling)=On" --min-db -30 --max-db 0
