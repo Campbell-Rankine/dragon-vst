@@ -1,4 +1,5 @@
-//! Host-independent DSP building blocks for dragon-vst plugins.
+//! Host-independent DSP building blocks for dragon-vst plugins: EQ filters
+//! (`eq`, `svf`, ...) and the Dragon Waave synth engine (`synth`).
 //!
 //! Nothing in this crate may depend on nih-plug, so it can be unit-tested
 //! without a plugin host.
@@ -7,6 +8,7 @@ pub mod biquad;
 pub mod eq;
 pub mod matched;
 pub mod svf;
+pub mod synth;
 
 pub use biquad::Biquad;
 pub use eq::{analog_magnitude_db, BandDesign, BandFilter, BandSettings, FilterType, Slope, MAX_SECTIONS};

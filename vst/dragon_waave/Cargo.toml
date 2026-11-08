@@ -11,3 +11,4 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 nih_plug.workspace = true
+dsp-core.workspace = true

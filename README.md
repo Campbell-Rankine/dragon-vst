@@ -9,7 +9,7 @@ VST List:
 
 1. dragon_24eq: a 24-band parametric EQ (9 filter types, 6-96 dB/oct cuts, mid/side), growing toward a Pro-Q 4-style dynamic EQ (`vst/dragon_24eq`)
 2. dragon_threeq: a 3-band EQ (Low, Mid, High) with the same per-band controls as Dragon 24EQ, all on one screen (`vst/dragon_threeq`)
-3. dragon_waave: an 80s-style polyphonic synth (work in progress: MIDI plumbing and a placeholder sine voice so far) (`vst/dragon_waave`)
+3. dragon_waave: an 80s-style polyphonic synth (work in progress: oscillators with sync, cross-mod and ring mod, sub, noise, ladder / SVF / MS filters, amp and filter envelopes, LFOs with tempo sync, a 6-slot mod matrix with bend, mod wheel and aftertouch, poly / mono / legato with glide, unison and drift, and 16 voices so far; see `docs/dragon_waave.md`) (`vst/dragon_waave`)
 
 ## Layout
 

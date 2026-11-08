@@ -9,7 +9,7 @@ dragon-vst/
 ├── build2lynx.sh         test + build + smoke-test + install (see tools.md)
 ├── .cargo/config.toml    `cargo xtask` alias
 ├── crates/
-│   └── dsp-core/         host-independent DSP (filters), unit-tested
+│   └── dsp-core/         host-independent DSP (EQ filters, synth engine), unit-tested
 ├── vst/
 │   ├── dragon_24eq/    the 24-band EQ plugin (nih-plug + egui)
 │   ├── dragon_threeq/  the 3-band EQ plugin (same structure)

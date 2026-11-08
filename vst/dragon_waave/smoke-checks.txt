@@ -3,10 +3,91 @@
 # Instruments get no audio input. Each check plays a note (A4 unless --note),
 # checks the held peak in dBFS against --min-db / --max-db, then sends note-off
 # and checks the output decays to silence (unless --hold).
-# One full-velocity sine voice peaks at exactly the Volume setting.
+#
+# Expected peaks come from the waveform maths: every source peaks at 1.0, so
+# one full-velocity source at level 100% peaks at the Volume setting
+# (ring mod and FM too: a product of two +-1 signals, a sine of any phase)
+# (default -12 dB). Band-limiting rounds saw/triangle corners slightly (a
+# little below the ideal peak at 440 Hz, never above). These checks turn
+# the filter off so they test the oscillators alone.
 
-default volume -12 dBFS            | --min-db -12.05 --max-db -11.95
-volume 0 dB peaks at 0 dBFS        | --set "Volume=0" --min-db -0.05 --max-db 0.05
-half velocity is 6 dB quieter      | --velocity 0.5 --min-db -18.07 --max-db -17.97
-low note plays and releases        | --note 24
-high note plays and releases       | --note 108
+raw saw -12 dBFS                   | --set "Filter Type=Off" --min-db -12.2 --max-db -11.99
+sine at volume 0 dB peaks at 0     | --set "Filter Type=Off" --set "Osc 1 Wave=Sine" --set "Volume=0" --min-db -0.01 --max-db 0.01
+half velocity is 6 dB quieter      | --set "Filter Type=Off" --set "Osc 1 Wave=Sine" --velocity 0.5 --min-db -18.03 --max-db -18.0
+square peaks at 1                  | --set "Filter Type=Off" --set "Osc 1 Wave=Pulse" --min-db -12.05 --max-db -11.95
+10% pulse, DC removed: peak 1.8    | --set "Filter Type=Off" --set "Osc 1 Wave=Pulse" --set "Osc 1 Pulse Width=10" --min-db -7.0 --max-db -6.8
+triangle peaks at 1                | --set "Filter Type=Off" --set "Osc 1 Wave=Triangle" --min-db -12.2 --max-db -11.99
+osc 2 alone at 2'                  | --set "Filter Type=Off" --set "Osc 1 Level=0" --set "Osc 2 Level=100" --set "Osc 2 Wave=Sine" --set "Osc 2 Octave=2'" --min-db -12.01 --max-db -11.99
+sub square alone, -2 oct           | --set "Filter Type=Off" --set "Osc 1 Level=0" --set "Sub Level=100" --set "Sub Octave=-2 Oct" --min-db -12.05 --max-db -11.95
+white noise alone                  | --set "Filter Type=Off" --set "Osc 1 Level=0" --set "Noise Level=100" --min-db -12.1 --max-db -11.99
+pink noise alone is quieter        | --set "Filter Type=Off" --set "Osc 1 Level=0" --set "Noise Level=100" --set "Noise Color=Pink" --min-db -30 --max-db -12.5
+osc 1 at 16' on the lowest note    | --set "Filter Type=Off" --set "Osc 1 Octave=16'" --note 0
+osc 1 at 2' on the highest note    | --set "Filter Type=Off" --set "Osc 1 Octave=2'" --set "Osc 1 Semitone=12" --note 127
+mono (polyphony 1)                 | --set "Filter Type=Off" --set "Polyphony=1"
+ring mod of identical sines = sin^2 | --set "Filter Type=Off" --set "Osc 1 Wave=Sine" --set "Osc 2 Wave=Sine" --set "Osc 2 Fine=0" --set "Osc 1 Phase=Reset" --set "Osc 2 Phase=Reset" --set "Osc 1 Level=0" --set "Ring Mod Level=100" --min-db -12.02 --max-db -11.99
+synced saw +7 st alone             | --set "Filter Type=Off" --set "Osc 1 Level=0" --set "Osc 2 Level=100" --set "Osc 2 Semitone=7" --set "Osc 2 Sync=On" --min-db -12.5 --max-db -11.99
+max cross-mod, sine into sine      | --set "Filter Type=Off" --set "Osc 1 Wave=Sine" --set "Osc 2 Wave=Sine" --set "Osc 1 Level=0" --set "Osc 2 Level=100" --set "Osc 2 Cross Mod=5" --min-db -12.05 --max-db -11.99
+everything on at once, no clipping | --set "Osc 2 Level=100" --set "Osc 2 Sync=On" --set "Osc 2 Cross Mod=2" --set "Ring Mod Level=100" --set "Sub Level=100" --set "Noise Level=50" --set "Volume=-24" --min-db -30 --max-db 0
+
+# Filters. A sine at A4 (440 Hz) with the cutoff at 440 Hz, where each model's
+# gain is exact: ladder 4 one-poles = -12.04 dB; SVF (Q 0.5 at 0 resonance)
+# LP/HP = -6.02 dB, BP = 0 dB, notch = silence; MS LP 2 one-poles = -6.02 dB,
+# MS HP 1 one-pole = -3.01 dB; HPF 1 one-pole = -3.01 dB.
+# Ladder and MS saturate gently even at 0 drive, so those use Osc 1 Level 1%
+# (-40 dB, effectively linear): -12 - 40 = -52 dBFS before the filter.
+# The open ladder (20 kHz) phase-shifts a saw's top harmonics, which can
+# raise its peak a little, so that check allows +-1 dB around the raw saw.
+# Max drive saturates toward 2 x Volume = -12 + 6.02 = -5.98 dBFS.
+open ladder on a saw is near raw   | --min-db -13.0 --max-db -11.0
+ladder at the note: -12 dB         | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=440" --min-db -64.2 --max-db -63.9
+key track 100% from middle C       | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=261.63" --set "Filter Key Track=100" --min-db -64.2 --max-db -63.9
+SVF LP at the note: -6 dB          | --set "Osc 1 Wave=Sine" --set "Filter Type=SVF LP" --set "Filter Cutoff=440" --min-db -18.1 --max-db -17.95
+SVF HP at the note: -6 dB          | --set "Osc 1 Wave=Sine" --set "Filter Type=SVF HP" --set "Filter Cutoff=440" --min-db -18.1 --max-db -17.95
+SVF BP at the note: 0 dB           | --set "Osc 1 Wave=Sine" --set "Filter Type=SVF BP" --set "Filter Cutoff=440" --min-db -12.05 --max-db -11.95
+SVF notch at the note: silent      | --set "Osc 1 Wave=Sine" --set "Filter Type=SVF Notch" --set "Filter Cutoff=440" --min-db -200 --max-db -60
+MS LP at the note: -6 dB           | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Type=MS LP" --set "Filter Cutoff=440" --min-db -58.5 --max-db -57.5
+MS HP at the note: -3 dB           | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Type=MS HP" --set "Filter Cutoff=440" --min-db -55.5 --max-db -54.5
+HPF at the note: -3 dB             | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "HPF Cutoff=440" --min-db -15.07 --max-db -14.95
+max drive is limited to +-2        | --set "Filter Type=Off" --set "Filter Drive=24" --min-db -6.5 --max-db -5.97
+ladder self-oscillation is tamed   | --set "Filter Cutoff=440" --set "Filter Resonance=100" --min-db -40 --max-db 0
+MS self-oscillation is tamed       | --set "Filter Type=MS LP" --set "Filter Cutoff=440" --set "Filter Resonance=100" --min-db -40 --max-db 0
+
+# Envelopes (raw sine, filter off unless noted). ENV 1 is the amp, ENV 2 the
+# filter. Note-off comes at 0.533 s (block 50 of 512 samples at 48 kHz).
+amp sustain 50%: -6 dB             | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Amp Decay=10 ms" --set "Amp Sustain=50" --min-db -18.07 --max-db -17.97
+amp velocity 0%: velocity ignored  | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Amp Velocity=0" --velocity 0.5 --min-db -12.02 --max-db -11.99
+amp delay outlasts the note        | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Amp Delay=1 s" --min-db -inf --max-db -100
+pluck (sustain 0) ends by itself   | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Amp Decay=50 ms" --set "Amp Sustain=0" --min-db -inf --max-db -100
+10 s linear attack at 0.533 s      | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Amp Attack=10 s" --set "Amp Attack Curve=0" --min-db -37.55 --max-db -37.4
+filter env sweeps 2 oct to note    | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "Filter Env Amount=20" --set "Filter Env Sustain=100" --min-db -64.2 --max-db -63.9
+
+# LFO 1 (a square with Poly Retrig starts at +1 and holds it for half a cycle;
+# at 0.5 Hz that covers the whole held window). Same sine-at-the-cutoff
+# trick as the filter checks: the cutoff starts 2 octaves below the note
+# and +40 % LFO > Cutoff (x 5 oct) lifts it 2 octaves, onto the note.
+LFO > cutoff lifts 2 oct to note    | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "LFO 1 Shape=Square" --set "LFO 1 Rate=0.5" --set "LFO 1 Mode=Poly Retrig" --set "LFO 1 > Cutoff=40" --min-db -64.2 --max-db -63.9
+mono LFO starts at its phase too   | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "LFO 1 Shape=Square" --set "LFO 1 Rate=0.5" --set "LFO 1 Mode=Mono" --set "LFO 1 > Cutoff=40" --min-db -64.2 --max-db -63.9
+tempo sync 1/1 at 120 BPM = 0.5 Hz | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "LFO 1 Shape=Square" --set "LFO 1 Rate=40" --set "LFO 1 Sync=On" --set "LFO 1 Division=1/1" --set "LFO 1 Mode=Poly Retrig" --set "LFO 1 > Cutoff=40" --min-db -64.2 --max-db -63.9
+LFO delay outlasts the note        | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "LFO 1 Shape=Square" --set "LFO 1 Rate=0.5" --set "LFO 1 Mode=Poly Retrig" --set "LFO 1 > Cutoff=40" --set "LFO 1 Delay=1 s" --min-db -101.5 --max-db -100.9
+LFO > PWM to 95%: peak 1.9         | --set "Osc 1 Wave=Pulse" --set "Filter Type=Off" --set "LFO 1 Shape=Square" --set "LFO 1 Rate=0.5" --set "LFO 1 Mode=Poly Retrig" --set "LFO 1 > PWM=100" --min-db -6.48 --max-db -6.38
+
+# Mod matrix (slots 3-6 start empty; 1 and 2 hold the default wheel and
+# pressure routings, which stay silent because the smoke host sends neither).
+# Cutoff full range is 10 octaves, so +20 % = 2 octaves: 110 Hz -> 440 Hz,
+# onto the note (-64.04 dBFS, as in the filter checks).
+velocity -> cutoff +2 oct          | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "Mod 3 Source=Velocity" --set "Mod 3 Destination=Cutoff" --set "Mod 3 Amount=20" --min-db -64.2 --max-db -63.9
+mod env (ENV 3) -> cutoff          | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "Mod Env Sustain=100" --set "Mod 4 Source=Mod Env" --set "Mod 4 Destination=Cutoff" --set "Mod 4 Amount=20" --min-db -64.2 --max-db -63.9
+LFO 2 (held square) -> cutoff      | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "LFO 2 Shape=Square" --set "LFO 2 Rate=0.5" --set "LFO 2 Mode=Poly Retrig" --set "Mod 5 Source=LFO 2" --set "Mod 5 Destination=Cutoff" --set "Mod 5 Amount=20" --min-db -64.2 --max-db -63.9
+via: velocity x velocity at 0.5    | --set "Osc 1 Wave=Sine" --set "Osc 1 Level=1" --set "Filter Cutoff=110" --set "Mod 6 Source=Velocity" --set "Mod 6 Destination=Cutoff" --set "Mod 6 Amount=80" --set "Mod 6 Via=Velocity" --velocity 0.5 --min-db -70.2 --max-db -69.9
+velocity -> amp -50%: -6 dB         | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Mod 3 Source=Velocity" --set "Mod 3 Destination=Amp" --set "Mod 3 Amount=-50" --min-db -18.07 --max-db -17.97
+
+# Voice modes, unison, glide, drift (raw sine, filter off). Unison scales
+# each voice by 1/sqrt(N): N identical in-phase voices peak at sqrt(N).
+# Unison Detune is set at the same instant as the note, so it glides from its
+# 15 ct default to 0 over its 10 ms smoothing: the stack drifts a few degrees
+# apart and peaks a little under +6.02 dB (measured -6.01 dBFS).
+unison 4 in phase: x2 (+6.02 dB)   | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Osc 1 Phase=Reset" --set "Unison=4" --set "Unison Detune=0" --set "Unison Spread=0" --min-db -6.05 --max-db -5.95
+unison 2 hard L/R: 1/sqrt2 a side  | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Osc 1 Phase=Reset" --set "Unison=2" --set "Unison Detune=0" --set "Unison Spread=100" --min-db -15.06 --max-db -14.96
+mono mode                          | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Voice Mode=Mono" --min-db -12.02 --max-db -11.99
+legato mode with glide             | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Voice Mode=Legato" --set "Glide=1 s" --min-db -12.02 --max-db -11.99
+full drift keeps the level         | --set "Osc 1 Wave=Sine" --set "Filter Type=Off" --set "Drift=100" --min-db -12.02 --max-db -11.99

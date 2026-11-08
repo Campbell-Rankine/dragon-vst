@@ -81,7 +81,7 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
 | `--note <key>` | MIDI key to play, 0–127 (default 69 for instruments; effects get no note unless given) |
 | `--velocity <0..1>` | Note-on velocity (default 1) |
 | `--hold` | Never send note-off; skips the silence check |
-| `--min-db`, `--max-db` | Bounds on the held output peak in dBFS (instrument defaults -60 and 0; effects only check them if given) |
+| `--min-db`, `--max-db` | Bounds on the held output peak in dBFS (instrument defaults -60 and 0; effects only check them if given). `--min-db -inf` allows exact silence |
 
 `--expect-db` and the per-channel overrides are relative to the input, so
 they're rejected for instruments. Use `--min-db` / `--max-db` instead.
@@ -132,8 +132,11 @@ bell +12 dB at its centre | --set "Band 2 Gain=12" --expect-db 12
   - switching a band off
   - output gain
   - stacked 96 dB/oct high cuts near Nyquist (a regression check)
-- **Dragon Waave's checks** cover the volume and velocity levels, and notes
-  at both ends of the keyboard playing and releasing.
+- **Dragon Waave's checks** cover each oscillator waveform, OSC 2, the sub
+  and both noise colours on their own, volume, velocity, notes at the
+  extremes of the keyboard and octave range, and polyphony 1. Expected
+  peaks come from the waveform maths (see
+  [dragon_waave.md](dragon_waave.md#testing)).
 
 ## `xtask`: bundler
 
@@ -151,7 +154,7 @@ and ad-hoc code-signs them. Universal builds need the x86_64 target:
 ## API docs
 
 ```sh
-cargo doc --no-deps -p dsp-core -p dragon_24eq -p dragon_threeq -p clap-smoke --open
+cargo doc --no-deps -p dsp-core -p dragon_24eq -p dragon_threeq -p dragon_waave -p clap-smoke --open
 ```
 
 ## Optional: external validators
