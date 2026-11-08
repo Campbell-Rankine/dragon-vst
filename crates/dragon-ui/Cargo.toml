@@ -1,0 +1,11 @@
+[package]
+name = "dragon-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared egui widgets and palette for the dragon-vst plugin editors"
+
+[dependencies]
+nih_plug.workspace = true
+nih_plug_egui.workspace = true
