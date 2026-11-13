@@ -609,7 +609,7 @@ filter.
 
 ## Presets
 
-35 factory presets, chosen from **PRESET** in the editor header: a dropdown
+59 factory presets, chosen from **PRESET** in the editor header: a dropdown
 grouped by category, with ◀ ▶ to step through. Source:
 [`vst/dragon_waave/src/presets.rs`](../vst/dragon_waave/src/presets.rs).
 
@@ -619,10 +619,10 @@ grouped by category, with ◀ ▶ to step through. Source:
 | Brass | Six Brass (Polysix), Prophet Brass, OB Stab, Vangelis Swell (CS-80), Synth Horns, Brass Section (unison) |
 | Pads | Ensemble Pad, Juno Pad (PWM), Glass Pad, Dark Drift, Sync Sweep Pad, Vox Pad, Warm Pad |
 | Strings | Poly-800 Strings, Solina Strings |
-| Keys | FM E.Piano (DX7-style), FM Tine EP, Wurli Bark, Poly Clav, 80s Organ, Hollow Keys |
+| Keys | FM E.Piano (DX7-style), FM Tine EP, Wurli Bark, Poly Clav, 80s Organ, Hollow Keys, Tremolo EP (auto-pan), Tine Grand, Poly Piano, Perc Organ, Harpsichord, Pluck Keys, Lo-Fi Keys, House Stab |
 | Bells | FM Tubular Bell, Glass Bell, Ring Bell, Music Box, Celesta, Marimba, Vibes |
-| Leads | MS Sync Lead, Six Lead, Square Lead |
-| Bass | Sub Bass, Six Bass, MS Acid Bass |
+| Leads | MS Sync Lead, Six Lead, Square Lead, Stack Lead (unison), Whistle Lead, Sync Scream, PWM Lead, Ring Lead, Acid Lead, Bwaa Lead (bend 12), Chip Lead |
+| Bass | Sub Bass, Six Bass, MS Acid Bass, Reese Bass (unison), FM Bass, Pluck Bass, Pedal Bass, Drop Bass, Wobble Bass (tempo-synced), Sync Bass, Organ Bass |
 
 - **How a preset is stored:** a list of `(parameter ID, value text)` pairs
   on top of the init patch.
@@ -648,15 +648,37 @@ grouped by category, with ◀ ▶ to step through. Source:
   - `presets.rs` checks every ID exists, every value parses and survives
     being shown and parsed again, no preset sets a parameter twice, names
     are unique, and Init is first and empty.
-  - Each preset also has a generated smoke check in `smoke-checks.txt`
-    (between `# BEGIN PRESETS` and `# END PRESETS`). It plays the preset's
-    test note through the real plugin and requires it to be audible
-    (> −60 dBFS) and not clip (≤ 0 dBFS).
+  - Each preset also has generated smoke checks in `smoke-checks.txt`
+    (between `# BEGIN PRESETS` and `# END PRESETS`), run through the real
+    plugin:
+    - **Level:** the test note's held peak, on both channels, must land in
+      the category's window: **−8 to −1 dBFS for Bass** (bass sits
+      forward), **−12 to −3 dBFS for everything else**. The note starts
+      once the preset's values have finished smoothing (`--note-at`) and
+      is measured from its note-on over 3 s, so plucks' attacks and slow
+      pads' swells both count.
+    - **Range:** Bass is also played at 28 and 48, Leads at 60 and 84, and
+      Keys at 36 and 96. Each must be audible and not clip.
+    - **Load (Keys):** an 8-note chord at 128-sample buffers must stay under
+      40 % of the buffer budget (p99).
   - A test fails if that block falls out of date. Run
     `UPDATE_PRESET_CHECKS=1 cargo test -p dragon_waave preset_smoke` to
     regenerate it.
 - **Adding a preset:** add a `preset(...)` entry to `PRESETS`, regenerate
   the smoke checks, then run `./build2lynx.sh dragon_waave`.
+- **Levels:** volumes were retuned on 2026-11-14 so every preset fits its
+  window. Chorus spreads the channels 1–2 dB apart, so the quieter channel
+  is the one that counts.
+- **Wheel exceptions:** Wurli Bark (tremolo always on; wheel deepens it),
+  Tremolo EP (auto-pan always on; wheel widens it), Lo-Fi Keys (wheel adds
+  pitch wow), Reese Bass (wheel opens the filter), Drop Bass
+  (wheel deepens the pitch drop) and Wobble Bass (wheel deepens the
+  wobble), Sync Scream (wheel widens the sync sweep) and Chip Lead (wheel
+  adds an octave trill) use slot 1 for that instead of vibrato. Whistle
+  Lead's aftertouch adds vibrato instead of opening the (switched-off)
+  filter.
+- **History:** 24 keys, leads and basses were added on 2026-11-14 (see
+  [dragon_waave_presets.md](dragon_waave_presets.md)).
 
 ## Build order
 

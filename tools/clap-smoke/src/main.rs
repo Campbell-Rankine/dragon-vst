@@ -29,6 +29,10 @@
 //!   --min-db <dBFS>               minimum held output peak (default -60 for instruments)
 //!   --max-db <dBFS>               maximum held output peak (default 0 for instruments)
 //!   --chord <n>                   play n notes (the key, then every 2 semitones up; default 1)
+//!   --seconds <s>                 run length (default about 1.07 s; never shorter)
+//!   --note-at <samples>           start the note(s) this late (default 0). Levels are then
+//!                                 measured from the note-on, so the attack counts; e.g.
+//!                                 10240 lets --set values finish smoothing first
 //!
 //! Other:
 //!   --list-params                 print every parameter's display name and exit
@@ -58,7 +62,7 @@ use clap_sys::events::{
     clap_event_header, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
 };
-use clap_sys::ext::audio_ports::{clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
+use clap_sys::ext::audio_ports::{clap_audio_port_info, clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
 use clap_sys::ext::note_ports::{clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS};
 use clap_sys::ext::params::{clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS};
 use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
@@ -120,6 +124,8 @@ struct Options {
     automate_every: usize,
     max_load: Option<f64>,
     list_params: bool,
+    note_at: usize,
+    run_samples: usize,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -143,6 +149,8 @@ fn parse_args() -> Result<Options, String> {
         automate_every: 16,
         max_load: None,
         list_params: false,
+        note_at: 0,
+        run_samples: RUN_SAMPLES,
     };
     let (mut left, mut right, mut both) = (None, None, None);
     while let Some(flag) = args.next() {
@@ -194,6 +202,15 @@ fn parse_args() -> Result<Options, String> {
             }
             "--max-load" => opts.max_load = Some(num(value()?)?),
             "--list-params" => opts.list_params = true,
+            "--seconds" => {
+                let secs = num(value()?)?;
+                check!(secs > 0.0 && secs <= 60.0, "--seconds must be in (0, 60]");
+                opts.run_samples = ((secs * SAMPLE_RATE) as usize).max(RUN_SAMPLES);
+            }
+            "--note-at" => {
+                opts.note_at = num(value()?)? as usize;
+                check!(opts.note_at < NOTE_OFF_SAMPLES, "--note-at must be before the note-off at {NOTE_OFF_SAMPLES}");
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -249,7 +266,7 @@ fn main() -> ExitCode {
                 "error: {e}\nusage: clap-smoke <Plugin.clap> [--set NAME=TEXT]... [--tone HZ] [--expect-db DB] \
                  [--expect-left-db DB] [--expect-right-db DB] [--tol DB] [--note KEY] [--velocity V] [--hold] \
                  [--min-db DBFS] [--max-db DBFS] [--chord N] [--block SAMPLES] [--automate NAME=FROM..TO]... \
-                 [--automate-every SAMPLES] [--max-load PERCENT] [--list-params]"
+                 [--automate-every SAMPLES] [--max-load PERCENT] [--list-params] [--note-at SAMPLES] [--seconds S]"
             );
             return ExitCode::from(2);
         }
@@ -353,6 +370,24 @@ unsafe fn input_port_count(plugin: *const clap_plugin, ext_id: &CStr, audio: boo
     }
 }
 
+/// Channel count of each audio input port, main first. Hosts must pass a
+/// buffer for every declared port (nih-plug reads them unchecked), so
+/// sidechain ports get silence unless a test feeds them.
+unsafe fn input_port_channels(plugin: *const clap_plugin) -> Vec<u32> {
+    let p = &*plugin;
+    let ext = (p.get_extension.unwrap())(plugin, CLAP_EXT_AUDIO_PORTS.as_ptr()) as *const clap_plugin_audio_ports;
+    if ext.is_null() {
+        return Vec::new();
+    }
+    let ext = &*ext;
+    (0..(ext.count.unwrap())(plugin, true))
+        .map(|i| {
+            let mut info: clap_audio_port_info = std::mem::zeroed();
+            if (ext.get.unwrap())(plugin, i, true, &mut info) { info.channel_count } else { 2 }
+        })
+        .collect()
+}
+
 fn to_dbfs(peak: f32) -> f64 {
     20.0 * (peak as f64).log10()
 }
@@ -439,8 +474,15 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
             (Some(opts.min_db.unwrap_or(INSTRUMENT_MIN_DB)), Some(opts.max_db.unwrap_or(INSTRUMENT_MAX_DB)))
         };
         let block = opts.block;
-        let blocks = RUN_SAMPLES / block;
+        let blocks = opts.run_samples / block;
         let note_off = note.filter(|_| !opts.hold).map(|_| NOTE_OFF_SAMPLES);
+        // A late note is measured from its start; otherwise wait for smoothing.
+        let measure_from = if opts.note_at > 0 { opts.note_at } else { SETTLE_SAMPLES };
+        let run_samples = opts.run_samples;
+        let input_channels = input_port_channels(plugin);
+        if input_channels.len() > 1 {
+            println!("  {} audio input ports (channels {:?}); extra ports get silence", input_channels.len(), input_channels);
+        }
         let keys: Vec<u8> = match note {
             Some(key) => (0..opts.chord).map(|i| key as usize + 2 * i).filter(|&k| k <= 127).map(|k| k as u8).collect(),
             None => Vec::new(),
@@ -451,7 +493,8 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         let mut schedule: Vec<Vec<Event>> = (0..blocks).map(|_| Vec::new()).collect();
         schedule[0] = param_events(plugin, &opts.sets)?;
         for &key in &keys {
-            schedule[0].push(note_event(CLAP_EVENT_NOTE_ON, key, opts.velocity, 0));
+            let on = opts.note_at.min(blocks * block - 1);
+            schedule[on / block].push(note_event(CLAP_EVENT_NOTE_ON, key, opts.velocity, (on % block) as u32));
             if let Some(off) = note_off {
                 schedule[off / block].push(note_event(CLAP_EVENT_NOTE_OFF, key, 0.0, (off % block) as u32));
             }
@@ -484,7 +527,7 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         let plugin_addr = plugin as usize;
         let tone = has_audio_input.then_some(opts.tone);
         let m = std::thread::spawn(move || {
-            process_blocks(plugin_addr as *const clap_plugin, schedule, block, tone, note_off)
+            process_blocks(plugin_addr as *const clap_plugin, schedule, block, tone, note_off, measure_from, run_samples, &input_channels)
         })
         .join()
         .map_err(|_| "audio thread panicked".to_string())??;
@@ -585,6 +628,9 @@ unsafe fn process_blocks(
     block_len: usize,
     tone: Option<f32>,
     note_off: Option<usize>,
+    measure_from: usize,
+    run_samples: usize,
+    input_channels: &[u32],
 ) -> Result<Measurement, String> {
     let blocks = schedule.len();
     let p = &*plugin;
@@ -595,6 +641,14 @@ unsafe fn process_blocks(
     let mut out_l = vec![0f32; block_len];
     let mut out_r = vec![0f32; block_len];
     let mut times = Vec::with_capacity(blocks);
+    // Sidechain (aux) ports: silent buffers, one per channel.
+    let mut aux_data: Vec<Vec<Vec<f32>>> = input_channels
+        .iter()
+        .skip(1)
+        .map(|&n| (0..n).map(|_| vec![0f32; block_len]).collect())
+        .collect();
+    let mut aux_ptrs: Vec<Vec<*mut f32>> =
+        aux_data.iter_mut().map(|chans| chans.iter_mut().map(|c| c.as_mut_ptr()).collect()).collect();
     let event_lists: Vec<clap_input_events> = schedule
         .iter()
         .map(|events| clap_input_events {
@@ -605,8 +659,8 @@ unsafe fn process_blocks(
         .collect();
     let out_events = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(out_events_push) };
 
-    let settle_block = SETTLE_SAMPLES / block_len;
-    let measure_end = note_off.unwrap_or(RUN_SAMPLES) / block_len;
+    let settle_block = measure_from / block_len;
+    let measure_end = note_off.unwrap_or(run_samples) / block_len;
     let tail_start = blocks - (TAIL_SAMPLES / block_len).max(1);
     let mut m = Measurement {
         peak_l: 0.0,
@@ -629,13 +683,22 @@ unsafe fn process_blocks(
         }
         let mut in_ptrs = [in_l.as_mut_ptr(), in_r.as_mut_ptr()];
         let mut out_ptrs = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
-        let inputs = clap_audio_buffer {
+        let mut inputs = vec![clap_audio_buffer {
             data32: in_ptrs.as_mut_ptr(),
             data64: std::ptr::null_mut(),
             channel_count: 2,
             latency: 0,
             constant_mask: 0,
-        };
+        }];
+        for ptrs in &mut aux_ptrs {
+            inputs.push(clap_audio_buffer {
+                data32: ptrs.as_mut_ptr(),
+                data64: std::ptr::null_mut(),
+                channel_count: ptrs.len() as u32,
+                latency: 0,
+                constant_mask: 0,
+            });
+        }
         let mut outputs = clap_audio_buffer {
             data32: out_ptrs.as_mut_ptr(),
             data64: std::ptr::null_mut(),
@@ -647,9 +710,9 @@ unsafe fn process_blocks(
             steady_time: (block * block_len) as i64,
             frames_count: block_len as u32,
             transport: std::ptr::null(),
-            audio_inputs: if tone.is_some() { &inputs } else { std::ptr::null() },
+            audio_inputs: if tone.is_some() { inputs.as_ptr() } else { std::ptr::null() },
             audio_outputs: &mut outputs,
-            audio_inputs_count: tone.is_some() as u32,
+            audio_inputs_count: if tone.is_some() { inputs.len() as u32 } else { 0 },
             audio_outputs_count: 1,
             in_events,
             out_events: &out_events,

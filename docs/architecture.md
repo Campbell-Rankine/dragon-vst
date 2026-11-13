@@ -14,7 +14,8 @@ dragon-vst/
 ├── vst/
 │   ├── dragon_24eq/    the 24-band EQ plugin (nih-plug + egui)
 │   ├── dragon_threeq/  the 3-band EQ plugin (same structure)
-│   └── dragon_waave/   the 80s-style synth (instrument: MIDI in, stereo out)
+│   ├── dragon_waave/   the 80s-style synth (instrument: MIDI in, stereo out)
+│   └── dragon_pump/    the volume ducker (effect with a sidechain input; in progress)
 ├── tools/
 │   └── clap-smoke/       headless CLAP host used as a pre-install check
 ├── xtask/                nih-plug's bundler (`cargo xtask bundle ...`)

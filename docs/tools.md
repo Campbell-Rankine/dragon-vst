@@ -56,7 +56,9 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
    then 100 blocks of 512 samples, then `stop_processing`. Parameter events
    go in the first block. Any non-finite output fails the run.
    - **Effects:** the input is a 0.5-amplitude sine (the same on both
-     channels).
+     channels). Any further audio input ports (a sidechain) get silent
+     buffers: hosts must pass a buffer for every declared port, and
+     nih-plug's CLAP wrapper reads them without checking the count.
    - **Instruments:** there is no audio input. A note-on (A4 by default) goes
      in the first block and a note-off in block 50 (about 0.53 s). The plugin
      must have a `clap.note-ports` input.
@@ -88,6 +90,8 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
 | `--automate-every <samples>` | Spacing of automation events (default 16) |
 | `--max-load <percent>` | Fail if the 99th-percentile `process()` time is over this share of the buffer's real-time budget |
 | `--list-params` | Print every parameter's display name and exit |
+| `--note-at <samples>` | Start the note(s) this late (default 0) and measure levels from the note-on, so the attack counts. 10240 lets `--set` values finish smoothing first |
+| `--seconds <s>` | Run length (default about 1.07 s; never shorter), e.g. 3 for slow pad attacks |
 
 `--expect-db` and the per-channel overrides are relative to the input, so
 they're rejected for instruments. Use `--min-db` / `--max-db` instead.
@@ -154,6 +158,9 @@ bell +12 dB at its centre | --set "Band 2 Gain=12" --expect-db 12
   extremes of the keyboard and octave range, and polyphony 1. Expected
   peaks come from the waveform maths (see
   [dragon_waave.md](dragon_waave.md#testing)).
+  Generated preset checks follow: a level window per category, range
+  notes for bass, leads and keys, and a chord load check for keys (see
+  [dragon_waave.md](dragon_waave.md#presets)).
 
 ## `xtask`: bundler
 

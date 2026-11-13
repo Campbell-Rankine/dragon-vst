@@ -1,0 +1,9 @@
+# Parameter checks run by build2lynx.sh through tools/clap-smoke after bundling.
+# Format: <description> | <clap-smoke options>
+# Step 0 (skeleton): audio passes through with the Output gain; the
+# sidechain input gets silence from clap-smoke and must not affect anything.
+
+passthrough at defaults          | --expect-db 0
+output -6 dB                     | --set "Output=-6" --expect-db -6
+output +6 dB                     | --set "Output=6" --expect-db 6
+output at its -12 dB limit       | --set "Output=-12" --expect-db -12
