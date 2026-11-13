@@ -82,6 +82,12 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
 | `--velocity <0..1>` | Note-on velocity (default 1) |
 | `--hold` | Never send note-off; skips the silence check |
 | `--min-db`, `--max-db` | Bounds on the held output peak in dBFS (instrument defaults -60 and 0; effects only check them if given). `--min-db -inf` allows exact silence |
+| `--chord <n>` | Play n notes: the key, then every 2 semitones up (default 1). Raise `--max-db` to match |
+| `--block <samples>` | Host buffer size, 1–4096 (default 512). The run stays about 1.07 s long |
+| `--automate "<name>=<a>..<b>"` | Sweep a parameter between two values (texts parsed by the plugin) as a triangle, twice a second. Repeatable |
+| `--automate-every <samples>` | Spacing of automation events (default 16) |
+| `--max-load <percent>` | Fail if the 99th-percentile `process()` time is over this share of the buffer's real-time budget |
+| `--list-params` | Print every parameter's display name and exit |
 
 `--expect-db` and the per-channel overrides are relative to the input, so
 they're rejected for instruments. Use `--min-db` / `--max-db` instead.
@@ -97,6 +103,17 @@ cargo run -q -p clap-smoke --release -- "target/bundled/Dragon 24EQ.clap" \
 # Middle C on the synth must peak between -20 and 0 dBFS, then release:
 cargo run -q -p clap-smoke --release -- "target/bundled/Dragon Waave.clap" \
     --note 60 --min-db -20
+```
+
+Every run also prints `process()` load: mean, 99th percentile and worst
+time per call as a share of the buffer's real-time budget, skipping the
+first call. Run it with `--release`; it's wall-clock time on a normal
+thread, so expect a little noise in the worst case.
+
+```sh
+# 16 voices, 128-sample buffers, cutoff swept with an event every sample:
+target/release/clap-smoke "target/bundled/Dragon Waave.clap" --chord 16 --max-db 30 \
+    --block 128 --automate-every 1 --automate "Filter Cutoff=200..5000"
 ```
 
 **Limitations:**

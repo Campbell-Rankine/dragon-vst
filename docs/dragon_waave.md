@@ -20,8 +20,8 @@ unison and analog drift.
 | 7 Smoke test for instruments | Done (see [tools.md](tools.md)) |
 | 3 Sound engine | **Done** (phases 1–8) |
 | 4 Full parameter set | Done: every engine feature has its parameters |
-| 5 Real-time safety | Ongoing: no allocation in `process()` (enforced by `assert_process_allocs`) |
-| 6 Editor | In progress: every control on one page; chips, displays and polish to come ([dragon_waave_ui.md](dragon_waave_ui.md)) |
+| 5 Real-time safety | Ongoing: no allocation in `process()` (enforced by `assert_process_allocs`). Dropouts while editing: plan in [dragon_waave_perf.md](dragon_waave_perf.md) |
+| 6 Editor | Done: one page styled like Dragon 24EQ, with every control, selector chips, and envelope and LFO displays ([dragon_waave_ui.md](dragon_waave_ui.md)) |
 | 8 Docs | This page |
 
 ## Signal flow
@@ -229,9 +229,10 @@ That's 122 parameters in total:
 | Bend range | 1 |
 | Voice settings | 8 |
 | Chorus | 5 |
-| Clip, HQ, polyphony and volume | 4 | The editor (step 6) will need two
-pages: **Main** (oscillators, filter, amp, chorus) and **Mod** (LFOs,
-ENV 3, matrix, voice).
+| Clip, HQ, polyphony and volume | 4 |
+
+Every one of them has a control on the editor's single page; a test
+checks this ([dragon_waave_ui.md](dragon_waave_ui.md)).
 
 ## Components
 
@@ -574,6 +575,14 @@ filter.
   | Normal | about 6.5 % | 15× realtime |
   | HQ | about 13 % | 8× realtime |
 
+- **Editing benchmark:** `cargo test -p dsp-core --release
+  synth::tests::bench_editing -- --ignored --nocapture` changes the patch
+  every block (block sizes 1–128, with and without note churn) and reports
+  mean and worst block time. See [dragon_waave_perf.md](dragon_waave_perf.md).
+- **Automation:** `SAMPLE_ACCURATE_AUTOMATION` is off. The engine already
+  ramps continuous settings over 32 samples, and splitting buffers at every
+  parameter change only added overhead. Note events stay sample-accurate.
+  Unchanged patches aren't re-applied.
 - **Fast `tan`:** the filters' per-sample prewarp uses a [5/4] Padé
   approximant at x/2 plus the double-angle formula. It's within 2e-6 of
   `std` across the whole cutoff range (tested). It made no measurable
@@ -597,6 +606,57 @@ filter.
     18.7 and 10.3 kHz) drop by more than 30 dB, and the fundamental is
     unchanged within 0.05 dB.
   - Switching HQ mid-note retunes the voices and clears the decimator.
+
+## Presets
+
+35 factory presets, chosen from **PRESET** in the editor header: a dropdown
+grouped by category, with ◀ ▶ to step through. Source:
+[`vst/dragon_waave/src/presets.rs`](../vst/dragon_waave/src/presets.rs).
+
+| Category | Presets |
+|---|---|
+| Init | Init |
+| Brass | Six Brass (Polysix), Prophet Brass, OB Stab, Vangelis Swell (CS-80), Synth Horns, Brass Section (unison) |
+| Pads | Ensemble Pad, Juno Pad (PWM), Glass Pad, Dark Drift, Sync Sweep Pad, Vox Pad, Warm Pad |
+| Strings | Poly-800 Strings, Solina Strings |
+| Keys | FM E.Piano (DX7-style), FM Tine EP, Wurli Bark, Poly Clav, 80s Organ, Hollow Keys |
+| Bells | FM Tubular Bell, Glass Bell, Ring Bell, Music Box, Celesta, Marimba, Vibes |
+| Leads | MS Sync Lead, Six Lead, Square Lead |
+| Bass | Sub Bass, Six Bass, MS Acid Bass |
+
+- **How a preset is stored:** a list of `(parameter ID, value text)` pairs
+  on top of the init patch.
+  - The text is parsed by each parameter's own parser, for example
+    `("flt_cutoff", "650")`, `("env1_attack", "25 ms")` or
+    `("flt_type", "LP24 Six")`.
+  - Loading a preset sets every parameter: its own value if listed,
+    otherwise the default. So a preset fully replaces the sound. Each change
+    is a normal automation gesture, so hosts record it.
+  - The choice saves with the project as ordinary parameter values. The
+    picker's label, though, isn't saved.
+- **Performance controls:** every preset keeps the default matrix slots
+  (the mod wheel adds vibrato, aftertouch opens the filter) unless it uses
+  those slots itself. Presets put their own routings in slots 3–6.
+- **How the families are built:**
+  - **FM keys and bells:** OSC 1 is an unheard sine modulator and OSC 2 the
+    carrier, through Cross Mod. The Mod Env, routed to Cross Mod and
+    velocity-scaled, makes the attack brighter.
+  - **Bell ratios:** Tubular Bell uses 3.5:1 (4' + 9.69 st), Glass Bell
+    √2:1 (+6 st), and Celesta and Marimba 2:1.
+  - **Ring Bell** ring-modulates two sines 2.38× apart.
+- **Tests:**
+  - `presets.rs` checks every ID exists, every value parses and survives
+    being shown and parsed again, no preset sets a parameter twice, names
+    are unique, and Init is first and empty.
+  - Each preset also has a generated smoke check in `smoke-checks.txt`
+    (between `# BEGIN PRESETS` and `# END PRESETS`). It plays the preset's
+    test note through the real plugin and requires it to be audible
+    (> −60 dBFS) and not clip (≤ 0 dBFS).
+  - A test fails if that block falls out of date. Run
+    `UPDATE_PRESET_CHECKS=1 cargo test -p dragon_waave preset_smoke` to
+    regenerate it.
+- **Adding a preset:** add a `preset(...)` entry to `PRESETS`, regenerate
+  the smoke checks, then run `./build2lynx.sh dragon_waave`.
 
 ## Build order
 

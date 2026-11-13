@@ -136,6 +136,9 @@ impl Synth {
     }
 
     fn with_chorus(sample_rate: f32, chorus: chorus::Chorus) -> Self {
+        // `apply_patch` below only recomputes what changed from the default
+        // patch, so everything derived from it starts at the default's values.
+        let chorus_tone_g = chorus.tone_g(&Patch::default().chorus);
         let mut synth = Self {
             sample_rate,
             voice_rate: sample_rate,
@@ -178,7 +181,7 @@ impl Synth {
             chorus,
             chorus_mix: Ramp::default(),
             chorus_depth: Ramp::default(),
-            chorus_tone_g: 0.0,
+            chorus_tone_g,
         };
         synth.apply_patch(&Patch::default(), 0);
         synth.restart_mono_lfos();
@@ -232,9 +235,13 @@ impl Synth {
         self.env_amount.set_target(p.filter.env_amount, ramp);
         self.chorus_mix.set_target(p.chorus.mix, ramp);
         self.chorus_depth.set_target(p.chorus.depth, ramp);
-        self.chorus_tone_g = self.chorus.tone_g(&p.chorus);
+        if p.chorus.tone != old.chorus.tone {
+            self.chorus_tone_g = self.chorus.tone_g(&p.chorus);
+        }
         // Times apply at once (they set rates); sustain levels ramp.
-        self.envs = Envs::new(&p, self.voice_rate);
+        if rate_changed || p.amp_env != old.amp_env || p.filter_env != old.filter_env || p.mod_env != old.mod_env {
+            self.envs = Envs::new(&p, self.voice_rate);
+        }
         self.amp_sustain.set_target(p.amp_env.sustain, ramp);
         self.filter_sustain.set_target(p.filter_env.sustain, ramp);
         self.mod_sustain.set_target(p.mod_env.sustain, ramp);
@@ -1302,24 +1309,7 @@ mod tests {
     #[test]
     #[ignore]
     fn bench() {
-        let mut p = Patch::default();
-        p.osc2 = OscSettings { level: 0.8, ..p.osc2 };
-        p.sub.level = 0.5;
-        p.noise.level = 0.1;
-        p.ring_level = 0.2;
-        p.osc2_sync = true;
-        p.cross_mod = 1.0;
-        p.filter = FilterSettings { cutoff: 1_200.0, resonance: 0.6, drive_db: 6.0, env_amount: 0.3, hpf_cutoff: 80.0, ..p.filter };
-        p.lfo1 = LfoSettings { mode: LfoMode::Poly, ..p.lfo1 };
-        p.lfo1_to = LfoRoutes { pitch: 0.01, pwm: 0.2, cutoff: 0.1 };
-        let all = [ModDest::Cutoff, ModDest::Resonance, ModDest::Pan, ModDest::Osc2Pitch, ModDest::Drive, ModDest::Amp];
-        for (slot, dest) in p.mod_slots.iter_mut().zip(all) {
-            *slot = ModSlot { source: ModSource::Lfo2, dest, amount: 0.05, via: ModSource::Velocity };
-        }
-        p.lfo2.mode = LfoMode::Poly;
-        p.voice.drift = 1.0;
-        p.chorus.mode = ChorusMode::Ensemble;
-        p.polyphony = MAX_VOICES;
+        let mut p = bench_patch();
         for hq in [false, true] {
             p.hq = hq;
             let mut s = synth_with(p);
@@ -1339,6 +1329,82 @@ mod tests {
                 secs as f64 / took
             );
         }
+    }
+
+    /// Editing while playing: `bench`'s patch, with cutoff, detune, drive,
+    /// an envelope time and a matrix amount changing every block (as a
+    /// knob or automation would), at several block sizes. A second pass
+    /// also plays a new note every 50 ms, so voices are stolen. Reports
+    /// mean and worst block time against the block's real-time budget.
+    /// `cargo test -p dsp-core --release synth::tests::bench_editing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_editing() {
+        let base = bench_patch();
+        for churn in [false, true] {
+            for block in [1usize, 4, 32, 128] {
+                let mut s = synth_with(base);
+                for n in 0..MAX_VOICES as u8 {
+                    s.note_on(None, 0, 40 + n * 2, 0.8);
+                }
+                let secs = 4.0;
+                let blocks = (secs * SR) as usize / block;
+                let (mut l, mut r) = (vec![0.0; block], vec![0.0; block]);
+                let churn_every = (0.05 * SR) as usize / block.max(1);
+                let (mut total, mut worst) = (0.0f64, 0.0f64);
+                for b in 0..blocks {
+                    // A slow triangle, like a hand on a knob.
+                    let x = (b * block) as f32 / SR;
+                    let tri = 1.0 - (2.0 * (x * 2.0).fract() - 1.0).abs();
+                    let mut p = base;
+                    p.filter.cutoff = 200.0 * 25f32.powf(tri);
+                    p.filter.drive_db = 12.0 * tri;
+                    p.voice.detune = 30.0 * tri;
+                    p.amp_env.attack = 0.001 + 0.05 * tri;
+                    p.mod_slots[0].amount = 0.1 * tri;
+                    let start = std::time::Instant::now();
+                    if churn && churn_every > 0 && b % churn_every == 0 {
+                        let key = 40 + ((b / churn_every) % 32) as u8;
+                        s.note_off(None, 0, key.wrapping_sub(16).max(40));
+                        s.note_on(None, 0, key, 0.8);
+                    }
+                    s.set_patch(&p);
+                    s.render(&mut l, &mut r);
+                    let took = start.elapsed().as_secs_f64();
+                    total += took;
+                    worst = worst.max(took);
+                }
+                let budget = block as f64 / SR as f64;
+                println!(
+                    "bench_editing (block {block:>3}, churn {churn:>5}): mean {:5.1} %, worst {:6.1} % of the block budget",
+                    100.0 * total / blocks as f64 / budget,
+                    100.0 * worst / budget
+                );
+            }
+        }
+    }
+
+    /// `bench`'s patch: everything on.
+    fn bench_patch() -> Patch {
+        let mut p = Patch::default();
+        p.osc2 = OscSettings { level: 0.8, ..p.osc2 };
+        p.sub.level = 0.5;
+        p.noise.level = 0.1;
+        p.ring_level = 0.2;
+        p.osc2_sync = true;
+        p.cross_mod = 1.0;
+        p.filter = FilterSettings { cutoff: 1_200.0, resonance: 0.6, drive_db: 6.0, env_amount: 0.3, hpf_cutoff: 80.0, ..p.filter };
+        p.lfo1 = LfoSettings { mode: LfoMode::Poly, ..p.lfo1 };
+        p.lfo1_to = LfoRoutes { pitch: 0.01, pwm: 0.2, cutoff: 0.1 };
+        let all = [ModDest::Cutoff, ModDest::Resonance, ModDest::Pan, ModDest::Osc2Pitch, ModDest::Drive, ModDest::Amp];
+        for (slot, dest) in p.mod_slots.iter_mut().zip(all) {
+            *slot = ModSlot { source: ModSource::Lfo2, dest, amount: 0.05, via: ModSource::Velocity };
+        }
+        p.lfo2.mode = LfoMode::Poly;
+        p.voice.drift = 1.0;
+        p.chorus.mode = ChorusMode::Ensemble;
+        p.polyphony = MAX_VOICES;
+        p
     }
 
     #[test]

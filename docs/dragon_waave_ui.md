@@ -1,7 +1,7 @@
 # Dragon Waave editor
 
-The plan for Dragon Waave's custom editor (roadmap step 6), styled like
-Dragon 24EQ. The sound engine and parameters are in
+Dragon Waave's custom editor (roadmap step 6), styled like Dragon 24EQ:
+what it is, how it was built, and how it's tested. The sound engine and parameters are in
 [dragon_waave.md](dragon_waave.md).
 
 **Decisions:**
@@ -19,7 +19,7 @@ Dragon 24EQ. The sound engine and parameters are in
 | 2 | Waave editor skeleton: every control in the layout | **Done** (see [Step 2 notes](#step-2-notes)) |
 | 3 | 24EQ-style ENV / LFO chips, themed dropdowns, greying rules | **Done** (see [Step 3 notes](#step-3-notes)) |
 | 4 | Envelope and LFO shape displays | **Done** (see [Step 4 notes](#step-4-notes)) |
-| 5 | Parameter-coverage test, docs, install | Planned |
+| 5 | Parameter-coverage test, docs, install | **Done** (see [Testing](#testing)) |
 
 ## Step 2 notes
 
@@ -217,6 +217,16 @@ DRAGON WAAVE                                    [HQ] [CLIP]   drag · shift fine
   - Amount is a mini 28 px bipolar knob.
 - **Header:** HQ and Output Clip are ON/OFF pills, like the 24EQ's band
   switch.
+- **Load meter (header, right):** `DSP a% max b% · GUI c ms max d`, the
+  synth's share of each audio buffer and the editor's frame time, with
+  peaks held for a second. Hover for an explanation. See
+  [dragon_waave_perf.md](dragon_waave_perf.md#reading-the-meter).
+- **PRESET picker (added with the presets):** in the header, `PRESET ◀
+  [Category: Name ▾] ▶`.
+  - The dropdown lists the presets grouped under peach category headings.
+  - ◀ ▶ step through them, wrapping around at the ends.
+  - Choosing one sets every parameter. See
+    [dragon_waave.md](dragon_waave.md#presets).
 
 ## Displays
 
@@ -253,18 +263,24 @@ DRAGON WAAVE                                    [HQ] [CLIP]   drag · shift fine
 
 ## Testing
 
-- **Every parameter is reachable (automated):**
-  - A test draws one editor frame headlessly, with a stub `GuiContext`
-    that implements nih-plug's GUI-context trait as no-ops.
-  - Each widget records the parameter it controls, and the test compares
-    those against the plugin's parameter map.
-  - It runs for every ENV and LFO chip selection, so a forgotten knob
-    fails the test. It also catches layout panics.
-- **The EQs are unchanged:** their smoke checks still pass. Their look
-  needs checking by eye in LYNX.
-- **Manual checklist in LYNX:**
-  - Every chip switches its panel.
-  - Dropdowns set their parameters, and host automation records them.
-  - Greyed controls follow the rules above.
-  - The window size is restored on reopen.
-  - The displays follow their knobs.
+Automated, in `vst/dragon_waave/src/editor.rs` and `displays.rs`. The tests
+draw the editor headlessly through a no-op `GuiContext`.
+
+| Test | Checks |
+|---|---|
+| `every_parameter_has_a_control` | Every widget helper (`knob`, `toggle`, `enum_combo`, ...) records its parameter, in test builds only. Across every ENV / LFO selection, the recorded set must equal the plugin's 122 parameters. Removing the Drift knob fails it with `no control for: ["Drift"]` (verified) |
+| `every_panel_fits_the_window` | Content stays inside the window and its margins, for every selection |
+| `panels_form_a_clean_grid` | Every row starts and ends at the page edges, panels in a row share a height, and every row splits at the left column |
+| Chip lighting | When each envelope and LFO counts as in use |
+| Display maths | Envelope and LFO outlines |
+
+**Adding a control:** use the helpers in `editor.rs`. A widget added
+without one isn't recorded, so the coverage test fails until it is.
+
+**Manual checklist in LYNX:**
+- Every chip switches its panel.
+- Dropdowns set their parameters, and host automation records them.
+- Greyed-out controls follow the rules above.
+- The window size is restored on reopen.
+- The displays follow their knobs.
+- The EQs look unchanged.

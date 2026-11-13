@@ -9,6 +9,7 @@
 //! See `docs/dragon_waave_ui.md` for the plan this follows.
 
 use crate::displays::{draw_envelope, draw_lfo};
+use crate::presets::{self, Category, PRESETS};
 use crate::params::{Read, 
     DestParam, DragonWaaveParams, EnvParams, FilterTypeParam, LfoModeParam, LfoParams, ModSlotParams, OscParams,
     SourceParam, VoiceModeParam, WaveParam,
@@ -44,18 +45,30 @@ const ENV_COLORS: [Color32; 3] = [theme::RED_LIGHT, theme::RED, theme::RED_DARK]
 pub struct EditorState {
     pub env: usize,
     pub lfo: usize,
+    /// The preset last chosen (its name stays shown after edits).
+    pub preset: Option<usize>,
     /// Each panel's outer rectangle from the last frame (row by row), for
     /// tests to check the grid lines up.
     pub panel_rects: Vec<egui::Rect>,
+    /// DSP and GUI load, shown in the header.
+    pub meter: crate::perf::Meter,
 }
 
-pub fn create(params: Arc<DragonWaaveParams>, egui_state: Arc<EguiState>) -> Option<Box<dyn Editor>> {
+pub fn create(
+    params: Arc<DragonWaaveParams>,
+    egui_state: Arc<EguiState>,
+    perf: Arc<crate::perf::PerfStats>,
+) -> Option<Box<dyn Editor>> {
+    let mut state = EditorState::default();
+    state.meter.stats = perf;
     create_egui_editor(
         egui_state,
-        EditorState::default(),
+        state,
         |ctx, _| setup(ctx),
         move |ctx, setter, state| {
+            let start = std::time::Instant::now();
             show(ctx, &params, setter, state);
+            state.meter.frame(start.elapsed().as_secs_f32() * 1e3);
         },
     )
 }
@@ -144,13 +157,41 @@ fn show(ctx: &egui::Context, params: &DragonWaaveParams, setter: &ParamSetter, s
         .inner
 }
 
+// ----- Widget helpers -----
+//
+// Every control goes through one of these, and each records the parameter
+// it controls (in test builds only), so a test can check that every
+// parameter has a control.
+
+#[cfg(test)]
+thread_local! {
+    /// Names of the parameters drawn since the last `take_tracked`.
+    static TRACKED: std::cell::RefCell<std::collections::BTreeSet<String>> = Default::default();
+}
+
+/// Record that `param` has a control on screen (test builds only).
+#[inline]
+fn track<P: Param>(param: &P) {
+    #[cfg(test)]
+    TRACKED.with(|t| t.borrow_mut().insert(param.name().to_owned()));
+    #[cfg(not(test))]
+    let _ = param;
+}
+
+/// The parameters drawn since the last call.
+#[cfg(test)]
+fn take_tracked() -> std::collections::BTreeSet<String> {
+    TRACKED.with(|t| std::mem::take(&mut *t.borrow_mut()))
+}
+
 /// A regular knob.
 fn knob<P: Param>(ui: &mut Ui, param: &P, setter: &ParamSetter, label: &str, color: Color32) {
-    ui.add(Knob::new(param, setter, label, color).diameter(KNOB));
+    knob_if(ui, true, param, setter, label, color);
 }
 
 /// A regular knob, greyed out and disabled unless `enabled`.
 fn knob_if<P: Param>(ui: &mut Ui, enabled: bool, param: &P, setter: &ParamSetter, label: &str, color: Color32) {
+    track(param);
     ui.add_enabled(enabled, Knob::new(param, setter, label, color).diameter(KNOB));
 }
 
@@ -160,7 +201,14 @@ fn bipolar<P: Param>(ui: &mut Ui, param: &P, setter: &ParamSetter, label: &str, 
 }
 
 fn bipolar_if<P: Param>(ui: &mut Ui, enabled: bool, param: &P, setter: &ParamSetter, label: &str, color: Color32) {
+    track(param);
     ui.add_enabled(enabled, Knob::new(param, setter, label, color).diameter(KNOB).bipolar());
+}
+
+/// An ON/OFF pill.
+fn toggle(ui: &mut Ui, param: &BoolParam, setter: &ParamSetter, color: Color32) {
+    track(param);
+    on_toggle(ui, param, setter, color);
 }
 
 /// An ON/OFF pill with a label above it, the height of a knob.
@@ -169,7 +217,7 @@ fn pill(ui: &mut Ui, param: &BoolParam, setter: &ParamSetter, label: &str, color
         ui.set_width(56.0);
         ui.label(egui::RichText::new(label).size(13.0).color(theme::TEXT_DIM));
         ui.add_space(10.0);
-        on_toggle(ui, param, setter, color);
+        toggle(ui, param, setter, color);
     });
 }
 
@@ -217,14 +265,23 @@ fn draw(ui: &mut Ui, params: &DragonWaaveParams, setter: &ParamSetter, state: &m
         );
         ui.add_space(24.0);
         ui.label(egui::RichText::new("HQ").color(theme::TEXT_DIM));
-        on_toggle(ui, &params.hq, setter, theme::PEACH);
+        toggle(ui, &params.hq, setter, theme::PEACH);
         ui.add_space(12.0);
         ui.label(egui::RichText::new("CLIP").color(theme::TEXT_DIM));
-        on_toggle(ui, &params.output_clip, setter, theme::PEACH);
+        toggle(ui, &params.output_clip, setter, theme::PEACH);
+        ui.add_space(24.0);
+        preset_picker(ui, params, setter, &mut state.preset);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new("drag to change · shift for fine · double-click to reset").color(theme::TEXT_DIM),
             );
+            ui.add_space(16.0);
+            ui.label(egui::RichText::new(state.meter.text()).small().monospace().color(theme::TEXT_DIM))
+                .on_hover_text(
+                    "DSP: share of each audio buffer's time the synth used (over 100 % = a dropout).\n\
+                     GUI: time to build one editor frame (drawing on the GPU comes after).\n\
+                     Peaks are held for a second.",
+                );
         });
     });
 
@@ -466,6 +523,43 @@ fn lfo_controls(ui: &mut Ui, lfo: &LfoParams, setter: &ParamSetter) {
     });
 }
 
+/// PRESET  ◀ [Category: Name ▾] ▶ — choosing one sets every parameter.
+fn preset_picker(ui: &mut Ui, params: &DragonWaaveParams, setter: &ParamSetter, chosen: &mut Option<usize>) {
+    let mut pick = None;
+    ui.label(egui::RichText::new("PRESET").color(theme::TEXT_DIM));
+    let step = |by: isize| {
+        let n = PRESETS.len() as isize;
+        let from = chosen.map_or(if by > 0 { -1 } else { 0 }, |i| i as isize);
+        (from + by).rem_euclid(n) as usize
+    };
+    if ui.small_button("◀").on_hover_text("Previous preset").clicked() {
+        pick = Some(step(-1));
+    }
+    let shown = chosen.map_or("—".to_owned(), |i| format!("{}: {}", PRESETS[i].category.name(), PRESETS[i].name));
+    egui::ComboBox::from_id_salt("preset").width(200.0).selected_text(shown).show_ui(ui, |ui| {
+        let mut category = None;
+        for (i, preset) in PRESETS.iter().enumerate() {
+            if category != Some(preset.category) {
+                category = Some(preset.category);
+                if preset.category != Category::Init {
+                    ui.separator();
+                }
+                ui.label(egui::RichText::new(preset.category.name()).small().color(theme::PEACH));
+            }
+            if ui.selectable_label(*chosen == Some(i), preset.name).clicked() {
+                pick = Some(i);
+            }
+        }
+    });
+    if ui.small_button("▶").on_hover_text("Next preset").clicked() {
+        pick = Some(step(1));
+    }
+    if let Some(i) = pick {
+        presets::apply(params, setter, &PRESETS[i]);
+        *chosen = Some(i);
+    }
+}
+
 /// One matrix row: number, Source -> Destination, Amount, via Via.
 fn mod_slot(ui: &mut Ui, n: usize, slot: &ModSlotParams, setter: &ParamSetter) {
     ui.horizontal(|ui| {
@@ -475,6 +569,7 @@ fn mod_slot(ui: &mut Ui, n: usize, slot: &ModSlotParams, setter: &ParamSetter) {
         ui.label(egui::RichText::new("→").color(theme::TEXT_DIM));
         enum_combo(ui, ("dest", n), &slot.dest, setter, 104.0);
         let routed = slot.source.value() != SourceParam::None && slot.dest.value() != DestParam::None;
+        track(&slot.amount);
         ui.add_enabled(routed, ParamSlider::for_param(&slot.amount, setter).with_width(96.0));
         ui.add_enabled_ui(routed, |ui| {
             ui.label(egui::RichText::new("via").color(theme::TEXT_DIM));
@@ -491,6 +586,7 @@ fn enum_combo<T: Enum + PartialEq + 'static>(
     setter: &ParamSetter,
     width: f32,
 ) {
+    track(param);
     let current = param.value().to_index();
     let names = T::variants();
     egui::ComboBox::from_id_salt(id)
@@ -633,6 +729,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every parameter has a control somewhere (across all ENV / LFO
+    /// selections), and every control is a real parameter.
+    #[test]
+    fn every_parameter_has_a_control() {
+        take_tracked();
+        for env in 0..3 {
+            for lfo in 0..2 {
+                frame(&mut EditorState { env, lfo, ..Default::default() });
+            }
+        }
+        let on_screen = take_tracked();
+        let params = DragonWaaveParams::default();
+        // Safety: the pointers come from `params`, which outlives them.
+        let all: std::collections::BTreeSet<String> =
+            params.param_map().iter().map(|(_, ptr, _)| unsafe { ptr.name() }.to_owned()).collect();
+        let missing: Vec<_> = all.difference(&on_screen).collect();
+        let unknown: Vec<_> = on_screen.difference(&all).collect();
+        assert!(missing.is_empty(), "no control for: {missing:?}");
+        assert!(unknown.is_empty(), "controls for unknown parameters: {unknown:?}");
+        assert_eq!(all.len(), 122, "parameter count changed: update the docs");
     }
 
     #[test]

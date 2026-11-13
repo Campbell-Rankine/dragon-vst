@@ -29,7 +29,8 @@ let db = design.magnitude_db(2_000.0, sample_rate as f64); // designed response,
 ```
 
 `analog_magnitude_db(&settings, freq)` gives the ideal analog response: the
-target the tests compare against, and what the milestone 2 graph will draw.
+target the tests compare against. The milestone 2 graph draws the designed
+response (`magnitude_db`) instead; see [dragon_24eq_graph.md](dragon_24eq_graph.md#decisions).
 
 ## Filter types
 

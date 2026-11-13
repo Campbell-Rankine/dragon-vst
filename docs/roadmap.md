@@ -26,9 +26,9 @@ working step.
 
 | # | Milestone | Done when |
 |---|---|---|
-| 2 | **Graph editor:** log-frequency / dB graph, draggable band nodes, scroll for Q, a combined response curve built from each band's exact response | Usable as a daily static EQ |
+| 2 | **Graph editor:** log-frequency / dB graph, draggable band nodes, scroll for Q, a combined response curve built from each band's designed response (cached per band), per-placement curves for L/R/M/S bands. Detailed plan: [dragon_24eq_graph.md](dragon_24eq_graph.md) | Usable as a daily static EQ from the graph alone; 60 fps with 24 bands at 96 dB/oct |
 | 3 | **Analyzer:** pre, post and sidechain spectra; lock-free ring buffer from audio to GUI; FFT on the GUI thread | 60 fps, no audio-thread contention |
-| 4 | **Dynamic EQ:** per-band envelope follower, threshold, range, attack and release; external sidechain | No zipper noise under fast gain changes |
+| 4 | **Dynamic EQ:** per-band envelope follower, threshold, range, attack and release; external sidechain; live gain and range drawn on the graph (see [graph plan](dragon_24eq_graph.md#hooks-for-milestones-3-and-4)) | No zipper noise under fast gain changes |
 | 5 | **Linear-phase mode:** FIR built from the combined magnitude response, partitioned FFT convolution, latency reported to the host | Host delay compensation lines up |
 | 6 | **Polish:** character/saturation modes (oversampled), auto-gain, presets, solo/audition, EQ match | — |
 | 7 | **Stretch:** spectral dynamics (STFT), natural-phase mode, collision detection | — |

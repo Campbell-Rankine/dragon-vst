@@ -28,6 +28,19 @@
 //!   --hold                        never send note-off (skips the silence check)
 //!   --min-db <dBFS>               minimum held output peak (default -60 for instruments)
 //!   --max-db <dBFS>               maximum held output peak (default 0 for instruments)
+//!   --chord <n>                   play n notes (the key, then every 2 semitones up; default 1)
+//!
+//! Other:
+//!   --list-params                 print every parameter's display name and exit
+//!
+//! Load (any plugin):
+//!   --block <samples>             host buffer size (default 512); the run length stays the same
+//!   --automate "<name>=<a>..<b>"  sweep a parameter between two values (texts parsed by the
+//!                                 plugin) as a triangle, one event every --automate-every
+//!                                 samples (repeatable)
+//!   --automate-every <samples>    spacing of automation events (default 16)
+//!   --max-load <percent>          fail if the 99th-percentile process() time exceeds this
+//!                                 share of the buffer's real-time budget
 //! ```
 //!
 //! Examples:
@@ -35,6 +48,8 @@
 //! cargo run -p clap-smoke -- "target/bundled/Dragon 24EQ.clap"
 //! cargo run -p clap-smoke -- "target/bundled/Dragon 24EQ.clap" --set "Band 2 Gain=12" --expect-db 12
 //! cargo run -p clap-smoke -- "target/bundled/Dragon Waave.clap" --note 48 --min-db -20
+//! cargo run -p clap-smoke --release -- "target/bundled/Dragon Waave.clap" --chord 16 --max-db 12 \
+//!     --block 128 --automate "Filter Cutoff=200..5000" --max-load 30
 //! ```
 
 use clap_sys::audio_buffer::clap_audio_buffer;
@@ -56,17 +71,21 @@ use clap_sys::version::CLAP_VERSION;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 const SAMPLE_RATE: f64 = 48_000.0;
-const BLOCK: usize = 512;
-const BLOCKS: usize = 100;
-/// Blocks skipped before measuring, so parameter smoothing has settled.
-const SETTLE_BLOCKS: usize = 20;
+const DEFAULT_BLOCK: usize = 512;
+/// Length of a run (about 1.07 s), whatever the block size.
+const RUN_SAMPLES: usize = 100 * 512;
+/// Samples skipped before measuring levels, so parameter smoothing has settled.
+const SETTLE_SAMPLES: usize = 20 * 512;
 const INPUT_AMPLITUDE: f32 = 0.5;
-/// Block the note-off is sent in (about 0.53 s in).
-const NOTE_OFF_BLOCK: usize = 50;
-/// The last this-many blocks must be silent after a note-off (about 0.1 s).
-const TAIL_BLOCKS: usize = 10;
+/// When the note-off is sent (about 0.53 s in).
+const NOTE_OFF_SAMPLES: usize = 50 * 512;
+/// The last this-many samples must be silent after a note-off (about 0.1 s).
+const TAIL_SAMPLES: usize = 10 * 512;
+/// One up-and-down automation sweep (0.5 s), like a knob being wiggled.
+const SWEEP_SAMPLES: usize = 24_000;
 /// Peak level (dBFS) that counts as silence.
 const SILENCE_DB: f64 = -80.0;
 const DEFAULT_NOTE: u8 = 69;
@@ -94,6 +113,13 @@ struct Options {
     hold: bool,
     min_db: Option<f64>,
     max_db: Option<f64>,
+    chord: usize,
+    block: usize,
+    /// (name, from text, to text)
+    automate: Vec<(String, String, String)>,
+    automate_every: usize,
+    max_load: Option<f64>,
+    list_params: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -111,6 +137,12 @@ fn parse_args() -> Result<Options, String> {
         hold: false,
         min_db: None,
         max_db: None,
+        chord: 1,
+        block: DEFAULT_BLOCK,
+        automate: Vec::new(),
+        automate_every: 16,
+        max_load: None,
+        list_params: false,
     };
     let (mut left, mut right, mut both) = (None, None, None);
     while let Some(flag) = args.next() {
@@ -140,6 +172,28 @@ fn parse_args() -> Result<Options, String> {
             "--hold" => opts.hold = true,
             "--min-db" => opts.min_db = Some(num(value()?)?),
             "--max-db" => opts.max_db = Some(num(value()?)?),
+            "--chord" => {
+                opts.chord = num(value()?)? as usize;
+                check!((1..=64).contains(&opts.chord), "--chord must be 1..=64");
+            }
+            "--block" => {
+                opts.block = num(value()?)? as usize;
+                check!((1..=4096).contains(&opts.block), "--block must be 1..=4096");
+            }
+            "--automate" => {
+                let v = value()?;
+                let parsed = v
+                    .split_once('=')
+                    .and_then(|(name, range)| range.split_once("..").map(|(a, b)| (name, a, b)));
+                let (name, a, b) = parsed.ok_or(format!("--automate expects NAME=FROM..TO, got {v:?}"))?;
+                opts.automate.push((name.to_string(), a.to_string(), b.to_string()));
+            }
+            "--automate-every" => {
+                opts.automate_every = num(value()?)? as usize;
+                check!(opts.automate_every >= 1, "--automate-every must be at least 1");
+            }
+            "--max-load" => opts.max_load = Some(num(value()?)?),
+            "--list-params" => opts.list_params = true,
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -194,7 +248,8 @@ fn main() -> ExitCode {
             eprintln!(
                 "error: {e}\nusage: clap-smoke <Plugin.clap> [--set NAME=TEXT]... [--tone HZ] [--expect-db DB] \
                  [--expect-left-db DB] [--expect-right-db DB] [--tol DB] [--note KEY] [--velocity V] [--hold] \
-                 [--min-db DBFS] [--max-db DBFS]"
+                 [--min-db DBFS] [--max-db DBFS] [--chord N] [--block SAMPLES] [--automate NAME=FROM..TO]... \
+                 [--automate-every SAMPLES] [--max-load PERCENT] [--list-params]"
             );
             return ExitCode::from(2);
         }
@@ -211,60 +266,66 @@ fn main() -> ExitCode {
     }
 }
 
-/// Resolve `--set` names to param-value events via the params extension.
-unsafe fn param_events(plugin: *const clap_plugin, sets: &[(String, String)]) -> Result<Vec<Event>, String> {
-    if sets.is_empty() {
-        return Ok(Vec::new());
-    }
+/// Look up a parameter by display name and parse `text` to its value.
+unsafe fn resolve_param(plugin: *const clap_plugin, name: &str, text: &str) -> Result<(u32, f64), String> {
     let p = &*plugin;
     let ext = (p.get_extension.unwrap())(plugin, CLAP_EXT_PARAMS.as_ptr()) as *const clap_plugin_params;
     check!(!ext.is_null(), "plugin has no params extension");
     let ext = &*ext;
     let count = (ext.count.unwrap())(plugin);
+    let mut found = None;
+    for i in 0..count {
+        let mut info: clap_param_info = std::mem::zeroed();
+        if (ext.get_info.unwrap())(plugin, i, &mut info) && CStr::from_ptr(info.name.as_ptr()).to_str() == Ok(name) {
+            found = Some(info.id);
+            break;
+        }
+    }
+    let id = found.ok_or(format!("no parameter named {name:?}"))?;
+    let text_c = CString::new(text).unwrap();
+    let mut value = 0.0;
+    check!(
+        (ext.text_to_value.unwrap())(plugin, id, text_c.as_ptr(), &mut value),
+        "plugin could not parse {text:?} for {name:?}"
+    );
+    Ok((id, value))
+}
 
+/// Resolve `--set` names to param-value events at time 0.
+unsafe fn param_events(plugin: *const clap_plugin, sets: &[(String, String)]) -> Result<Vec<Event>, String> {
     let mut events = Vec::new();
     for (name, text) in sets {
-        let mut found = None;
-        for i in 0..count {
-            let mut info: clap_param_info = std::mem::zeroed();
-            if (ext.get_info.unwrap())(plugin, i, &mut info) && CStr::from_ptr(info.name.as_ptr()).to_str() == Ok(name) {
-                found = Some(info.id);
-                break;
-            }
-        }
-        let id = found.ok_or(format!("no parameter named {name:?}"))?;
-        let text_c = CString::new(text.as_str()).unwrap();
-        let mut value = 0.0;
-        check!(
-            (ext.text_to_value.unwrap())(plugin, id, text_c.as_ptr(), &mut value),
-            "plugin could not parse {text:?} for {name:?}"
-        );
+        let (id, value) = resolve_param(plugin, name, text)?;
         println!("  set {name} = {text} (value {value})");
-        events.push(Event::Param(clap_event_param_value {
-            header: clap_event_header {
-                size: std::mem::size_of::<clap_event_param_value>() as u32,
-                time: 0,
-                space_id: CLAP_CORE_EVENT_SPACE_ID,
-                type_: CLAP_EVENT_PARAM_VALUE,
-                flags: 0,
-            },
-            param_id: id,
-            cookie: std::ptr::null_mut(),
-            note_id: -1,
-            port_index: -1,
-            channel: -1,
-            key: -1,
-            value,
-        }));
+        events.push(param_event(id, value, 0));
     }
     Ok(events)
 }
 
-fn note_event(type_: u16, key: u8, velocity: f64) -> Event {
+fn param_event(param_id: u32, value: f64, time: u32) -> Event {
+    Event::Param(clap_event_param_value {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_value>() as u32,
+            time,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_VALUE,
+            flags: 0,
+        },
+        param_id,
+        cookie: std::ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value,
+    })
+}
+
+fn note_event(type_: u16, key: u8, velocity: f64, time: u32) -> Event {
     Event::Note(clap_event_note {
         header: clap_event_header {
             size: std::mem::size_of::<clap_event_note>() as u32,
-            time: 0,
+            time,
             space_id: CLAP_CORE_EVENT_SPACE_ID,
             type_,
             flags: 0,
@@ -343,6 +404,19 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         check!((p.init.unwrap())(plugin), "plugin.init returned false");
         println!("  init ok");
 
+        if opts.list_params {
+            let ext = (p.get_extension.unwrap())(plugin, CLAP_EXT_PARAMS.as_ptr()) as *const clap_plugin_params;
+            check!(!ext.is_null(), "plugin has no params extension");
+            for i in 0..((*ext).count.unwrap())(plugin) {
+                let mut info: clap_param_info = std::mem::zeroed();
+                if ((*ext).get_info.unwrap())(plugin, i, &mut info) {
+                    println!("  {}", CStr::from_ptr(info.name.as_ptr()).to_string_lossy());
+                }
+            }
+            (p.destroy.unwrap())(plugin);
+            continue;
+        }
+
         // Effect or instrument?
         let has_audio_input = input_port_count(plugin, CLAP_EXT_AUDIO_PORTS, true) > 0;
         let note = opts.note.or((!has_audio_input).then_some(DEFAULT_NOTE));
@@ -364,21 +438,45 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         } else {
             (Some(opts.min_db.unwrap_or(INSTRUMENT_MIN_DB)), Some(opts.max_db.unwrap_or(INSTRUMENT_MAX_DB)))
         };
-        let note_off_block = note.filter(|_| !opts.hold).map(|_| NOTE_OFF_BLOCK);
+        let block = opts.block;
+        let blocks = RUN_SAMPLES / block;
+        let note_off = note.filter(|_| !opts.hold).map(|_| NOTE_OFF_SAMPLES);
+        let keys: Vec<u8> = match note {
+            Some(key) => (0..opts.chord).map(|i| key as usize + 2 * i).filter(|&k| k <= 127).map(|k| k as u8).collect(),
+            None => Vec::new(),
+        };
 
-        // Events per block: params (and note-on) first, then the note-off.
-        let mut schedule: Vec<Vec<Event>> = (0..BLOCKS).map(|_| Vec::new()).collect();
+        // Events per block, in time order: params and note-ons at the start,
+        // then automation, and the note-offs.
+        let mut schedule: Vec<Vec<Event>> = (0..blocks).map(|_| Vec::new()).collect();
         schedule[0] = param_events(plugin, &opts.sets)?;
-        if let Some(key) = note {
-            schedule[0].push(note_event(CLAP_EVENT_NOTE_ON, key, opts.velocity));
-            if let Some(b) = note_off_block {
-                schedule[b].push(note_event(CLAP_EVENT_NOTE_OFF, key, 0.0));
+        for &key in &keys {
+            schedule[0].push(note_event(CLAP_EVENT_NOTE_ON, key, opts.velocity, 0));
+            if let Some(off) = note_off {
+                schedule[off / block].push(note_event(CLAP_EVENT_NOTE_OFF, key, 0.0, (off % block) as u32));
             }
+        }
+        for (name, from, to) in &opts.automate {
+            let (id, a) = resolve_param(plugin, name, from)?;
+            let (_, b) = resolve_param(plugin, name, to)?;
+            println!("  automate {name}: {from} .. {to} (values {a} .. {b}), every {} samples", opts.automate_every);
+            for t in (0..blocks * block).step_by(opts.automate_every) {
+                // Triangle 0 -> 1 -> 0 over one sweep.
+                let x = (t % SWEEP_SAMPLES) as f64 / SWEEP_SAMPLES as f64;
+                let tri = 1.0 - (2.0 * x - 1.0).abs();
+                schedule[t / block].push(param_event(id, a + (b - a) * tri, (t % block) as u32));
+            }
+        }
+        for events in &mut schedule {
+            events.sort_by_key(|e| e.header().time);
+        }
+        if keys.len() > 1 {
+            println!("  chord: {} notes from {}", keys.len(), keys[0]);
         }
 
         check!(
-            (p.activate.unwrap())(plugin, SAMPLE_RATE, 1, BLOCK as u32),
-            "activate(48k, 512) returned false"
+            (p.activate.unwrap())(plugin, SAMPLE_RATE, 1, block as u32),
+            "activate(48k, {block}) returned false"
         );
         println!("  activate ok");
 
@@ -386,7 +484,7 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         let plugin_addr = plugin as usize;
         let tone = has_audio_input.then_some(opts.tone);
         let m = std::thread::spawn(move || {
-            process_blocks(plugin_addr as *const clap_plugin, schedule, tone, note_off_block)
+            process_blocks(plugin_addr as *const clap_plugin, schedule, block, tone, note_off)
         })
         .join()
         .map_err(|_| "audio thread panicked".to_string())??;
@@ -395,6 +493,7 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         let what = match (tone, note) {
             (Some(hz), Some(key)) => format!("a {hz} Hz tone + note {key}"),
             (Some(hz), None) => format!("a {hz} Hz tone"),
+            (None, Some(key)) if keys.len() > 1 => format!("a {}-note chord from {key}", keys.len()),
             (None, Some(key)) => format!("note {key}"),
             (None, None) => "silence".to_string(),
         };
@@ -404,7 +503,7 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
             let (left_db, right_db) = (left_dbfs - in_db, right_dbfs - in_db);
             let (exp_l, exp_r) = (opts.expect_left_db.unwrap_or(0.0), opts.expect_right_db.unwrap_or(0.0));
             println!(
-                "  processed {BLOCKS} blocks of {what}: left {left_db:+.3} dB, right {right_db:+.3} dB \
+                "  processed {blocks} blocks of {block} samples of {what}: left {left_db:+.3} dB, right {right_db:+.3} dB \
                  (expected {exp_l:+.3} / {exp_r:+.3} ± {})",
                 opts.tol
             );
@@ -413,7 +512,7 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
                 "output level outside tolerance"
             );
         } else {
-            println!("  processed {BLOCKS} blocks of {what}: peak left {left_dbfs:+.2} dBFS, right {right_dbfs:+.2} dBFS");
+            println!("  processed {blocks} blocks of {block} samples of {what}: peak left {left_dbfs:+.2} dBFS, right {right_dbfs:+.2} dBFS");
         }
 
         if min_db.is_some() || max_db.is_some() {
@@ -426,10 +525,23 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
             }
         }
 
-        if note_off_block.is_some() {
+        if note_off.is_some() {
             let tail_db = to_dbfs(m.tail_peak);
-            println!("  after note-off: last {TAIL_BLOCKS} blocks peak {tail_db:+.2} dBFS (must be < {SILENCE_DB} dBFS)");
+            println!("  after note-off: last {TAIL_SAMPLES} samples peak {tail_db:+.2} dBFS (must be < {SILENCE_DB} dBFS)");
             check!(tail_db < SILENCE_DB, "output did not decay to silence after note-off (stuck note?)");
+        }
+
+        let budget = block as f64 / SAMPLE_RATE;
+        let load = |secs: f64| 100.0 * secs / budget;
+        println!(
+            "  process() load: mean {:.1} %, p99 {:.1} %, worst {:.1} % of the {:.2} ms budget",
+            load(m.mean_secs),
+            load(m.p99_secs),
+            load(m.worst_secs),
+            budget * 1e3
+        );
+        if let Some(max) = opts.max_load {
+            check!(load(m.p99_secs) <= max, "p99 process() load {:.1} % is over {max} %", load(m.p99_secs));
         }
 
         (p.deactivate.unwrap())(plugin);
@@ -455,8 +567,13 @@ struct Measurement {
     /// the end if there is none).
     peak_l: f32,
     peak_r: f32,
-    /// Peak over both channels in the last `TAIL_BLOCKS` blocks.
+    /// Peak over both channels in the last `TAIL_SAMPLES` samples.
     tail_peak: f32,
+    /// Wall-clock time per `process()` call, skipping the first block
+    /// (one-off setup).
+    mean_secs: f64,
+    p99_secs: f64,
+    worst_secs: f64,
 }
 
 /// Run `BLOCKS` blocks through the plugin, sending `schedule[block]` with
@@ -465,16 +582,19 @@ struct Measurement {
 unsafe fn process_blocks(
     plugin: *const clap_plugin,
     schedule: Vec<Vec<Event>>,
+    block_len: usize,
     tone: Option<f32>,
-    note_off_block: Option<usize>,
+    note_off: Option<usize>,
 ) -> Result<Measurement, String> {
+    let blocks = schedule.len();
     let p = &*plugin;
     check!((p.start_processing.unwrap())(plugin), "start_processing returned false");
 
-    let mut in_l = vec![0f32; BLOCK];
-    let mut in_r = vec![0f32; BLOCK];
-    let mut out_l = vec![0f32; BLOCK];
-    let mut out_r = vec![0f32; BLOCK];
+    let mut in_l = vec![0f32; block_len];
+    let mut in_r = vec![0f32; block_len];
+    let mut out_l = vec![0f32; block_len];
+    let mut out_r = vec![0f32; block_len];
+    let mut times = Vec::with_capacity(blocks);
     let event_lists: Vec<clap_input_events> = schedule
         .iter()
         .map(|events| clap_input_events {
@@ -485,13 +605,22 @@ unsafe fn process_blocks(
         .collect();
     let out_events = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(out_events_push) };
 
-    let measure_end = note_off_block.unwrap_or(BLOCKS);
-    let mut m = Measurement { peak_l: 0.0, peak_r: 0.0, tail_peak: 0.0 };
+    let settle_block = SETTLE_SAMPLES / block_len;
+    let measure_end = note_off.unwrap_or(RUN_SAMPLES) / block_len;
+    let tail_start = blocks - (TAIL_SAMPLES / block_len).max(1);
+    let mut m = Measurement {
+        peak_l: 0.0,
+        peak_r: 0.0,
+        tail_peak: 0.0,
+        mean_secs: 0.0,
+        p99_secs: 0.0,
+        worst_secs: 0.0,
+    };
     let mut phase = 0f64;
     let step = 2.0 * std::f64::consts::PI * tone.unwrap_or(0.0) as f64 / SAMPLE_RATE;
     for (block, in_events) in event_lists.iter().enumerate() {
         if tone.is_some() {
-            for i in 0..BLOCK {
+            for i in 0..block_len {
                 let s = INPUT_AMPLITUDE * phase.sin() as f32;
                 in_l[i] = s;
                 in_r[i] = s;
@@ -515,8 +644,8 @@ unsafe fn process_blocks(
             constant_mask: 0,
         };
         let process = clap_process {
-            steady_time: (block * BLOCK) as i64,
-            frames_count: BLOCK as u32,
+            steady_time: (block * block_len) as i64,
+            frames_count: block_len as u32,
             transport: std::ptr::null(),
             audio_inputs: if tone.is_some() { &inputs } else { std::ptr::null() },
             audio_outputs: &mut outputs,
@@ -525,20 +654,30 @@ unsafe fn process_blocks(
             in_events,
             out_events: &out_events,
         };
+        let start = Instant::now();
         let status = (p.process.unwrap())(plugin, &process);
+        times.push(start.elapsed().as_secs_f64());
         check!(status != CLAP_PROCESS_ERROR, "process returned CLAP_PROCESS_ERROR on block {block}");
         for (&y, out) in out_l.iter().zip(&out_r) {
             check!(y.is_finite() && out.is_finite(), "non-finite output on block {block}");
         }
-        if (SETTLE_BLOCKS..measure_end).contains(&block) {
+        if (settle_block..measure_end).contains(&block) {
             m.peak_l = out_l.iter().fold(m.peak_l, |acc, s| acc.max(s.abs()));
             m.peak_r = out_r.iter().fold(m.peak_r, |acc, s| acc.max(s.abs()));
         }
-        if block >= BLOCKS - TAIL_BLOCKS {
+        if block >= tail_start {
             m.tail_peak = out_l.iter().chain(&out_r).fold(m.tail_peak, |acc, s| acc.max(s.abs()));
         }
     }
 
     (p.stop_processing.unwrap())(plugin);
+
+    let mut times = times.split_off(1.min(times.len()));
+    times.sort_by(f64::total_cmp);
+    if !times.is_empty() {
+        m.mean_secs = times.iter().sum::<f64>() / times.len() as f64;
+        m.p99_secs = times[(times.len() * 99 / 100).min(times.len() - 1)];
+        m.worst_secs = times[times.len() - 1];
+    }
     Ok(m)
 }

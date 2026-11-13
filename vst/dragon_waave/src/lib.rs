@@ -15,13 +15,15 @@
 //! (detune, spread) and drift; chorus I / II / ensemble and an output soft
 //! clip; an optional 2x oversampled HQ mode. See `docs/dragon_waave.md`.
 
-use dsp_core::synth::{Synth, RAMP_SAMPLES};
+use dsp_core::synth::{Patch, Synth, RAMP_SAMPLES};
 use nih_plug::prelude::*;
 use std::sync::Arc;
 
 mod displays;
 mod editor;
 mod params;
+mod perf;
+mod presets;
 
 pub use params::{DragonWaaveParams, Read};
 
@@ -35,6 +37,12 @@ const CONTROL_BLOCK: usize = RAMP_SAMPLES as usize;
 pub struct DragonWaave {
     params: Arc<DragonWaaveParams>,
     synth: Synth,
+    /// The patch last given to the synth, so unchanged ones (no knob
+    /// moving, smoothing settled: the usual case) aren't applied again.
+    applied: Option<Patch>,
+    /// Load meter shared with the editor.
+    perf: Arc<perf::PerfStats>,
+    sample_rate: f32,
 }
 
 impl Default for DragonWaave {
@@ -42,11 +50,22 @@ impl Default for DragonWaave {
         Self {
             params: Arc::new(DragonWaaveParams::default()),
             synth: Synth::new(48_000.0),
+            applied: None,
+            perf: Arc::default(),
+            sample_rate: 48_000.0,
         }
     }
 }
 
 impl DragonWaave {
+    /// Give the synth `patch` unless it's the one it already has.
+    fn update_patch(&mut self, patch: Patch) {
+        if self.applied != Some(patch) {
+            self.synth.set_patch(&patch);
+            self.applied = Some(patch);
+        }
+    }
+
     fn handle_event(&mut self, event: NoteEvent<()>) {
         match event {
             NoteEvent::NoteOn {
@@ -100,7 +119,12 @@ impl Plugin for DragonWaave {
 
     // MidiCCs adds pitch bend, CCs (mod wheel) and pressure.
     const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
-    const SAMPLE_ACCURATE_AUTOMATION: bool = true;
+    // Off: with it on, nih-plug splits the buffer at every parameter change
+    // (dozens per buffer while a knob moves), and each piece pays the whole
+    // per-call setup. It buys nothing audible here: the engine ramps every
+    // continuous setting over RAMP_SAMPLES and every smoother is 10-50 ms.
+    // Note events are still sample-accurate (`process` splits at them).
+    const SAMPLE_ACCURATE_AUTOMATION: bool = false;
 
     type SysExMessage = ();
     type BackgroundTask = ();
@@ -115,13 +139,15 @@ impl Plugin for DragonWaave {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        self.sample_rate = buffer_config.sample_rate;
         self.synth = Synth::new(buffer_config.sample_rate);
-        self.synth.set_patch(&self.params.patch(Read::Target, DEFAULT_BPM));
+        self.applied = None;
+        self.update_patch(self.params.patch(Read::Target, DEFAULT_BPM));
         true
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        editor::create(self.params.clone(), self.params.editor_state.clone())
+        editor::create(self.params.clone(), self.params.editor_state.clone(), self.perf.clone())
     }
 
     fn reset(&mut self) {
@@ -134,6 +160,7 @@ impl Plugin for DragonWaave {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let started = std::time::Instant::now();
         let len = buffer.samples();
         let bpm = context.transport().tempo.map_or(DEFAULT_BPM, |t| t as f32);
         let channels = buffer.as_slice();
@@ -148,7 +175,7 @@ impl Plugin for DragonWaave {
             // their new values, continuous controls where their smoothing is
             // now (the block below continues from there, so nothing jumps).
             if next_event.as_ref().is_some_and(|e| e.timing() as usize <= pos) {
-                self.synth.set_patch(&self.params.patch(Read::Current, bpm));
+                self.update_patch(self.params.patch(Read::Current, bpm));
             }
             while let Some(event) = next_event {
                 if event.timing() as usize > pos {
@@ -162,8 +189,7 @@ impl Plugin for DragonWaave {
                 end = end.min(event.timing() as usize);
             }
 
-            self.synth
-                .set_patch(&self.params.patch(Read::Advance((end - pos) as u32), bpm));
+            self.update_patch(self.params.patch(Read::Advance((end - pos) as u32), bpm));
             match channels {
                 [left, right, ..] => self.synth.render(&mut left[pos..end], &mut right[pos..end]),
                 [mono] => {
@@ -193,6 +219,7 @@ impl Plugin for DragonWaave {
             next_event = context.next_event();
         }
 
+        self.perf.record(started, len, self.sample_rate);
         ProcessStatus::KeepAlive
     }
 }
