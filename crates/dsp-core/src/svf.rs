@@ -37,6 +37,15 @@ impl SvfCoefs {
             m2: m2 as f32,
         }
     }
+
+    /// A 2-pole band-pass at `freq` Hz with quality `q`, unity gain at its
+    /// centre (constant peak gain), for detectors rather than EQ.
+    pub fn band_pass(freq: f32, q: f32, sample_rate: f32) -> Self {
+        let freq = freq.clamp(1.0, 0.49 * sample_rate) as f64;
+        let g = (std::f64::consts::PI * freq / sample_rate as f64).tan();
+        let k = 1.0 / q.max(0.05) as f64;
+        Self::from_parts(g, k, 0.0, k, 0.0)
+    }
 }
 
 /// Per-channel state for one section.
@@ -72,5 +81,30 @@ mod tests {
         for x in [1.0f32, -0.5, 0.25, 0.0, 0.75] {
             assert_eq!(f.process(&SvfCoefs::IDENTITY, x), x);
         }
+    }
+
+    /// Steady-state peak of a sine through the filter.
+    fn sine_gain(c: &SvfCoefs, freq: f32, sr: f32) -> f32 {
+        let mut f = Svf::default();
+        let n = (sr * 0.5) as usize;
+        let mut peak = 0.0f32;
+        for i in 0..n {
+            let y = f.process(c, (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin());
+            if i > n / 2 {
+                peak = peak.max(y.abs());
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn band_pass_is_unity_at_the_centre_and_cuts_either_side() {
+        let sr = 48_000.0;
+        let c = SvfCoefs::band_pass(80.0, 1.0, sr);
+        assert!((sine_gain(&c, 80.0, sr) - 1.0).abs() < 0.01);
+        // Two octaves either side: Q 1 band-pass is about -12 dB there.
+        assert!(sine_gain(&c, 20.0, sr) < 0.3);
+        assert!(sine_gain(&c, 320.0, sr) < 0.3);
+        assert!(sine_gain(&c, 1000.0, sr) < 0.1);
     }
 }

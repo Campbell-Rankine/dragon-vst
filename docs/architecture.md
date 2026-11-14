@@ -15,7 +15,7 @@ dragon-vst/
 │   ├── dragon_24eq/    the 24-band EQ plugin (nih-plug + egui)
 │   ├── dragon_threeq/  the 3-band EQ plugin (same structure)
 │   ├── dragon_waave/   the 80s-style synth (instrument: MIDI in, stereo out)
-│   └── dragon_pump/    the volume ducker (effect with a sidechain input; in progress)
+│   └── dragon_pump/    the volume ducker (effect with a sidechain input)
 ├── tools/
 │   └── clap-smoke/       headless CLAP host used as a pre-install check
 ├── xtask/                nih-plug's bundler (`cargo xtask bundle ...`)
@@ -40,8 +40,8 @@ package name. `build2lynx.sh` relies on that.
 ```
 
 - **`dragon-ui`** holds the editor pieces every plugin shares: the rotary
-  `Knob`, the palette (`theme`), titled `panel`s and ON/OFF pills
-  (`widgets`). Plugins keep only their own colour meanings, such as the
+  `Knob`, the palette (`theme`), titled `panel`s, chips and ON/OFF pills
+  (`widgets`), and the DSP / GUI load meter (`perf`). Plugins keep only their own colour meanings, such as the
   EQs' band colours, in their `theme.rs`.
 - **`dsp-core`** has no dependency on nih-plug. Anything that can be tested
   without a host (filter design, later analyzers and FIR design) goes here.

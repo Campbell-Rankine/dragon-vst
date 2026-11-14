@@ -33,9 +33,23 @@
 //!   --note-at <samples>           start the note(s) this late (default 0). Levels are then
 //!                                 measured from the note-on, so the attack counts; e.g.
 //!                                 10240 lets --set values finish smoothing first
+//!   --note-every <samples>        repeat the note-on(s) this often for the whole run (e.g.
+//!                                 a kick pattern for a MIDI-triggered effect; use --hold)
 //!
 //! Other:
 //!   --list-params                 print every parameter's display name and exit
+//!
+//! Tempo-synced plugins:
+//!   --tempo <bpm>                 send a playing transport from beat 0 (default: none,
+//!                                 as from a host that reports no transport)
+//!   --trough-max-db <dB>          the quietest 10 ms window (after settling; relative to the
+//!                                 input for effects, dBFS for instruments) must be at or below this
+//!   --expect-trough-db <dB>       ...or within --tol of this
+//!
+//! Sidechain plugins:
+//!   --sidechain-kicks <bpm>       feed every sidechain (aux) input synthetic kicks on each
+//!                                 beat (a 60 Hz sine decaying over 80 ms, peak about -2 dBFS)
+//!                                 instead of silence
 //!
 //! Load (any plugin):
 //!   --block <samples>             host buffer size (default 512); the run length stays the same
@@ -59,9 +73,11 @@
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    clap_event_header, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
-    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
+    clap_event_header, clap_event_note, clap_event_param_value, clap_event_transport, clap_input_events,
+    clap_output_events, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
+    CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_IS_PLAYING,
 };
+use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::ext::audio_ports::{clap_audio_port_info, clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
 use clap_sys::ext::note_ports::{clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS};
 use clap_sys::ext::params::{clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS};
@@ -125,7 +141,12 @@ struct Options {
     max_load: Option<f64>,
     list_params: bool,
     note_at: usize,
+    note_every: Option<usize>,
     run_samples: usize,
+    tempo: Option<f64>,
+    sidechain_kicks: Option<f64>,
+    trough_max_db: Option<f64>,
+    expect_trough_db: Option<f64>,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -150,7 +171,12 @@ fn parse_args() -> Result<Options, String> {
         max_load: None,
         list_params: false,
         note_at: 0,
+        note_every: None,
         run_samples: RUN_SAMPLES,
+        tempo: None,
+        sidechain_kicks: None,
+        trough_max_db: None,
+        expect_trough_db: None,
     };
     let (mut left, mut right, mut both) = (None, None, None);
     while let Some(flag) = args.next() {
@@ -202,10 +228,27 @@ fn parse_args() -> Result<Options, String> {
             }
             "--max-load" => opts.max_load = Some(num(value()?)?),
             "--list-params" => opts.list_params = true,
+            "--tempo" => {
+                let bpm = num(value()?)?;
+                check!(bpm > 0.0 && bpm <= 999.0, "--tempo must be in (0, 999]");
+                opts.tempo = Some(bpm);
+            }
+            "--sidechain-kicks" => {
+                let bpm = num(value()?)?;
+                check!(bpm > 0.0 && bpm <= 999.0, "--sidechain-kicks must be in (0, 999]");
+                opts.sidechain_kicks = Some(bpm);
+            }
+            "--trough-max-db" => opts.trough_max_db = Some(num(value()?)?),
+            "--expect-trough-db" => opts.expect_trough_db = Some(num(value()?)?),
             "--seconds" => {
                 let secs = num(value()?)?;
                 check!(secs > 0.0 && secs <= 60.0, "--seconds must be in (0, 60]");
                 opts.run_samples = ((secs * SAMPLE_RATE) as usize).max(RUN_SAMPLES);
+            }
+            "--note-every" => {
+                let every = num(value()?)? as usize;
+                check!(every >= 1, "--note-every must be at least 1 sample");
+                opts.note_every = Some(every);
             }
             "--note-at" => {
                 opts.note_at = num(value()?)? as usize;
@@ -266,7 +309,8 @@ fn main() -> ExitCode {
                 "error: {e}\nusage: clap-smoke <Plugin.clap> [--set NAME=TEXT]... [--tone HZ] [--expect-db DB] \
                  [--expect-left-db DB] [--expect-right-db DB] [--tol DB] [--note KEY] [--velocity V] [--hold] \
                  [--min-db DBFS] [--max-db DBFS] [--chord N] [--block SAMPLES] [--automate NAME=FROM..TO]... \
-                 [--automate-every SAMPLES] [--max-load PERCENT] [--list-params] [--note-at SAMPLES] [--seconds S]"
+                 [--automate-every SAMPLES] [--max-load PERCENT] [--list-params] [--note-at SAMPLES] [--note-every SAMPLES] [--seconds S] [--tempo BPM] [--sidechain-kicks BPM] \
+                 [--trough-max-db DB] [--expect-trough-db DB]"
             );
             return ExitCode::from(2);
         }
@@ -479,6 +523,10 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         // A late note is measured from its start; otherwise wait for smoothing.
         let measure_from = if opts.note_at > 0 { opts.note_at } else { SETTLE_SAMPLES };
         let run_samples = opts.run_samples;
+        let tempo = opts.tempo;
+        if let Some(bpm) = tempo {
+            println!("  transport: playing at {bpm} BPM from beat 0");
+        }
         let input_channels = input_port_channels(plugin);
         if input_channels.len() > 1 {
             println!("  {} audio input ports (channels {:?}); extra ports get silence", input_channels.len(), input_channels);
@@ -492,9 +540,18 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         // then automation, and the note-offs.
         let mut schedule: Vec<Vec<Event>> = (0..blocks).map(|_| Vec::new()).collect();
         schedule[0] = param_events(plugin, &opts.sets)?;
+        let last_sample = blocks * block - 1;
+        let note_ons: Vec<usize> = match opts.note_every {
+            Some(every) => (opts.note_at..=last_sample).step_by(every).collect(),
+            None => vec![opts.note_at.min(last_sample)],
+        };
+        if let Some(every) = opts.note_every {
+            println!("  note-ons every {every} samples ({} in all)", note_ons.len());
+        }
         for &key in &keys {
-            let on = opts.note_at.min(blocks * block - 1);
-            schedule[on / block].push(note_event(CLAP_EVENT_NOTE_ON, key, opts.velocity, (on % block) as u32));
+            for &on in &note_ons {
+                schedule[on / block].push(note_event(CLAP_EVENT_NOTE_ON, key, opts.velocity, (on % block) as u32));
+            }
             if let Some(off) = note_off {
                 schedule[off / block].push(note_event(CLAP_EVENT_NOTE_OFF, key, 0.0, (off % block) as u32));
             }
@@ -526,8 +583,24 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
         // Processing happens on its own thread, like a real host's audio thread.
         let plugin_addr = plugin as usize;
         let tone = has_audio_input.then_some(opts.tone);
+        let sidechain_kicks = opts.sidechain_kicks;
+        if let Some(bpm) = sidechain_kicks {
+            check!(input_channels.len() > 1, "--sidechain-kicks: the plugin has no sidechain (aux) input");
+            println!("  sidechain: kicks at {bpm} BPM");
+        }
         let m = std::thread::spawn(move || {
-            process_blocks(plugin_addr as *const clap_plugin, schedule, block, tone, note_off, measure_from, run_samples, &input_channels)
+            process_blocks(
+                plugin_addr as *const clap_plugin,
+                schedule,
+                block,
+                tone,
+                note_off,
+                measure_from,
+                run_samples,
+                &input_channels,
+                tempo,
+                sidechain_kicks,
+            )
         })
         .join()
         .map_err(|_| "audio thread panicked".to_string())??;
@@ -565,6 +638,18 @@ unsafe fn run(opts: &Options) -> Result<(), String> {
             for (side, db) in [("left", left_dbfs), ("right", right_dbfs)] {
                 check!(db >= lo, "{side} peak {db:+.2} dBFS is below {lo:+.2} dBFS (too quiet / silent)");
                 check!(db <= hi, "{side} peak {db:+.2} dBFS is above {hi:+.2} dBFS");
+            }
+        }
+
+        if opts.trough_max_db.is_some() || opts.expect_trough_db.is_some() {
+            let reference = if has_audio_input { to_dbfs(INPUT_AMPLITUDE) } else { 0.0 };
+            let trough_db = to_dbfs(m.trough) - reference;
+            println!("  trough (quietest 10 ms window): {trough_db:+.2} dB");
+            if let Some(max) = opts.trough_max_db {
+                check!(trough_db <= max, "trough {trough_db:+.2} dB is above {max:+.2} dB (not ducking enough?)");
+            }
+            if let Some(expect) = opts.expect_trough_db {
+                check!((trough_db - expect).abs() <= opts.tol, "trough {trough_db:+.2} dB, expected {expect:+.2} ± {}", opts.tol);
             }
         }
 
@@ -612,6 +697,8 @@ struct Measurement {
     peak_r: f32,
     /// Peak over both channels in the last `TAIL_SAMPLES` samples.
     tail_peak: f32,
+    /// The quietest 10 ms window's peak (both channels) in the measured range.
+    trough: f32,
     /// Wall-clock time per `process()` call, skipping the first block
     /// (one-off setup).
     mean_secs: f64,
@@ -622,6 +709,12 @@ struct Measurement {
 /// Run `BLOCKS` blocks through the plugin, sending `schedule[block]` with
 /// each block. With `tone`, the input is a stereo sine (same on both
 /// channels); without, the plugin gets no audio input.
+/// A synthetic kick `t` seconds after it starts: a 60 Hz sine decaying
+/// over 80 ms.
+fn synthetic_kick(t: f64) -> f32 {
+    (0.8 * (-t / 0.08).exp() * (2.0 * std::f64::consts::PI * 60.0 * t).sin()) as f32
+}
+
 unsafe fn process_blocks(
     plugin: *const clap_plugin,
     schedule: Vec<Vec<Event>>,
@@ -631,7 +724,12 @@ unsafe fn process_blocks(
     measure_from: usize,
     run_samples: usize,
     input_channels: &[u32],
+    tempo: Option<f64>,
+    sidechain_kicks: Option<f64>,
 ) -> Result<Measurement, String> {
+    const TROUGH_WINDOW: usize = 480; // 10 ms at 48 kHz
+    let (mut window_peak, mut window_len) = (0f32, 0usize);
+    let measure_end_sample = note_off.unwrap_or(run_samples);
     let blocks = schedule.len();
     let p = &*plugin;
     check!((p.start_processing.unwrap())(plugin), "start_processing returned false");
@@ -666,6 +764,7 @@ unsafe fn process_blocks(
         peak_l: 0.0,
         peak_r: 0.0,
         tail_peak: 0.0,
+        trough: f32::INFINITY,
         mean_secs: 0.0,
         p99_secs: 0.0,
         worst_secs: 0.0,
@@ -679,6 +778,17 @@ unsafe fn process_blocks(
                 in_l[i] = s;
                 in_r[i] = s;
                 phase += step;
+            }
+        }
+        if let Some(bpm) = sidechain_kicks {
+            let period = (60.0 / bpm * SAMPLE_RATE).round() as usize;
+            for chans in &mut aux_data {
+                for i in 0..block_len {
+                    let s = synthetic_kick(((block * block_len + i) % period) as f64 / SAMPLE_RATE);
+                    for ch in chans.iter_mut() {
+                        ch[i] = s;
+                    }
+                }
             }
         }
         let mut in_ptrs = [in_l.as_mut_ptr(), in_r.as_mut_ptr()];
@@ -706,10 +816,35 @@ unsafe fn process_blocks(
             latency: 0,
             constant_mask: 0,
         };
+        let transport = tempo.map(|bpm| {
+            let beats = (block * block_len) as f64 * bpm / 60.0 / SAMPLE_RATE;
+            clap_event_transport {
+                header: clap_event_header {
+                    size: std::mem::size_of::<clap_event_transport>() as u32,
+                    time: 0,
+                    space_id: CLAP_CORE_EVENT_SPACE_ID,
+                    type_: CLAP_EVENT_TRANSPORT,
+                    flags: 0,
+                },
+                flags: CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE | CLAP_TRANSPORT_IS_PLAYING,
+                song_pos_beats: (beats * CLAP_BEATTIME_FACTOR as f64).round() as i64,
+                song_pos_seconds: 0,
+                tempo: bpm,
+                tempo_inc: 0.0,
+                loop_start_beats: 0,
+                loop_end_beats: 0,
+                loop_start_seconds: 0,
+                loop_end_seconds: 0,
+                bar_start: 0,
+                bar_number: 0,
+                tsig_num: 4,
+                tsig_denom: 4,
+            }
+        });
         let process = clap_process {
             steady_time: (block * block_len) as i64,
             frames_count: block_len as u32,
-            transport: std::ptr::null(),
+            transport: transport.as_ref().map_or(std::ptr::null(), |t| t as *const _),
             audio_inputs: if tone.is_some() { inputs.as_ptr() } else { std::ptr::null() },
             audio_outputs: &mut outputs,
             audio_inputs_count: if tone.is_some() { inputs.len() as u32 } else { 0 },
@@ -723,6 +858,18 @@ unsafe fn process_blocks(
         check!(status != CLAP_PROCESS_ERROR, "process returned CLAP_PROCESS_ERROR on block {block}");
         for (&y, out) in out_l.iter().zip(&out_r) {
             check!(y.is_finite() && out.is_finite(), "non-finite output on block {block}");
+        }
+        for i in 0..block_len {
+            let n = block * block_len + i;
+            if n < measure_from || n >= measure_end_sample {
+                continue;
+            }
+            window_peak = window_peak.max(out_l[i].abs()).max(out_r[i].abs());
+            window_len += 1;
+            if window_len == TROUGH_WINDOW {
+                m.trough = m.trough.min(window_peak);
+                (window_peak, window_len) = (0.0, 0);
+            }
         }
         if (settle_block..measure_end).contains(&block) {
             m.peak_l = out_l.iter().fold(m.peak_l, |acc, s| acc.max(s.abs()));

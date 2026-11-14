@@ -5,6 +5,7 @@
 //! without a plugin host.
 
 pub mod biquad;
+pub mod duck;
 pub mod eq;
 pub mod matched;
 pub mod svf;

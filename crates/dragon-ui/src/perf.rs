@@ -1,11 +1,21 @@
-//! The load meter in the editor's header: how much of each buffer's time
+//! The load meter in an editor's header: how much of each buffer's time
 //! `process()` used, and how long the editor takes to build a frame. It's
 //! there to diagnose dropouts in a real host, where a profiler is awkward.
+//! Shared by every plugin with a meter (Dragon Waave, Dragon Pump).
+//!
+//! Wiring it up:
+//! - the plugin holds an `Arc<PerfStats>` and calls
+//!   [`PerfStats::record`] at the end of `process()` with an `Instant`
+//!   taken at its start;
+//! - the editor holds a [`Meter`] (with `stats` set to the same `Arc`),
+//!   times each frame into [`Meter::frame`], and draws [`Meter::show`].
 //!
 //! The audio thread only stores into atomics (no allocation, no locks).
 //! Measuring costs two clock reads per `process()` call.
 
+use crate::theme;
 use nih_plug::prelude::AtomicF32;
+use nih_plug_egui::egui::{self, Ui};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -73,6 +83,11 @@ impl Default for Meter {
 }
 
 impl Meter {
+    /// A meter reading the plugin's `stats`.
+    pub fn new(stats: std::sync::Arc<PerfStats>) -> Self {
+        Self { stats, ..Default::default() }
+    }
+
     /// Record one frame that took `ms` to build.
     pub fn frame(&mut self, ms: f32) {
         self.frame_ms += SMOOTHING * (ms - self.frame_ms);
@@ -82,6 +97,16 @@ impl Meter {
             self.held_frame_peak = std::mem::take(&mut self.frame_peak);
             self.last_hold = Instant::now();
         }
+    }
+
+    /// Draw the readout, with hover text explaining it. `plugin` names
+    /// what the DSP figure measures (e.g. "the synth").
+    pub fn show(&self, ui: &mut Ui, plugin: &str) -> egui::Response {
+        ui.label(egui::RichText::new(self.text()).small().monospace().color(theme::TEXT_DIM)).on_hover_text(format!(
+            "DSP: share of each audio buffer's time {plugin} used (over 100 % = a dropout).\n\
+             GUI: time to build one editor frame (drawing on the GPU comes after).\n\
+             Peaks are held for a second."
+        ))
     }
 
     /// e.g. "DSP 6% max 14% · GUI 2.1 ms max 4.0" (average, then peak).

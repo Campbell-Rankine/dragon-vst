@@ -57,8 +57,9 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
    go in the first block. Any non-finite output fails the run.
    - **Effects:** the input is a 0.5-amplitude sine (the same on both
      channels). Any further audio input ports (a sidechain) get silent
-     buffers: hosts must pass a buffer for every declared port, and
-     nih-plug's CLAP wrapper reads them without checking the count.
+     buffers, or synthetic kicks with `--sidechain-kicks`: hosts must pass
+     a buffer for every declared port, and nih-plug's CLAP wrapper reads
+     them without checking the count.
    - **Instruments:** there is no audio input. A note-on (A4 by default) goes
      in the first block and a note-off in block 50 (about 0.53 s). The plugin
      must have a `clap.note-ports` input.
@@ -91,7 +92,12 @@ A minimal CLAP host with no GUI. For every plugin in the bundle it:
 | `--max-load <percent>` | Fail if the 99th-percentile `process()` time is over this share of the buffer's real-time budget |
 | `--list-params` | Print every parameter's display name and exit |
 | `--note-at <samples>` | Start the note(s) this late (default 0) and measure levels from the note-on, so the attack counts. 10240 lets `--set` values finish smoothing first |
+| `--note-every <samples>` | Repeat the note-on(s) this often for the whole run, starting at `--note-at`: a kick pattern for a MIDI-triggered effect such as Dragon Pump. Use with `--hold` on effects (the input tone never stops, so there's no silence to check) |
+| `--sidechain-kicks <bpm>` | Feed every sidechain (aux) input a synthetic kick on each beat (a 60 Hz sine with an 80 ms decay, peak about −2 dBFS) instead of silence. Fails if the plugin has no aux input |
 | `--seconds <s>` | Run length (default about 1.07 s; never shorter), e.g. 3 for slow pad attacks |
+| `--tempo <bpm>` | Send a playing transport (tempo and beat position, from beat 0) with every block. Without it the transport is absent, as from a host that reports none |
+| `--trough-max-db <dB>` | The quietest 10 ms window (after settling; relative to the input for effects, dBFS for instruments) must be at or below this. Proves a ducker dips |
+| `--expect-trough-db <dB>` | The quietest 10 ms window must be within `--tol` of this |
 
 `--expect-db` and the per-channel overrides are relative to the input, so
 they're rejected for instruments. Use `--min-db` / `--max-db` instead.

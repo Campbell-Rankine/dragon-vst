@@ -22,7 +22,6 @@ use std::sync::Arc;
 mod displays;
 mod editor;
 mod params;
-mod perf;
 mod presets;
 
 pub use params::{DragonWaaveParams, Read};
@@ -41,7 +40,7 @@ pub struct DragonWaave {
     /// moving, smoothing settled: the usual case) aren't applied again.
     applied: Option<Patch>,
     /// Load meter shared with the editor.
-    perf: Arc<perf::PerfStats>,
+    perf: Arc<dragon_ui::perf::PerfStats>,
     sample_rate: f32,
 }
 

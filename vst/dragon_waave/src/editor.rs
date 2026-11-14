@@ -51,16 +51,15 @@ pub struct EditorState {
     /// tests to check the grid lines up.
     pub panel_rects: Vec<egui::Rect>,
     /// DSP and GUI load, shown in the header.
-    pub meter: crate::perf::Meter,
+    pub meter: dragon_ui::perf::Meter,
 }
 
 pub fn create(
     params: Arc<DragonWaaveParams>,
     egui_state: Arc<EguiState>,
-    perf: Arc<crate::perf::PerfStats>,
+    perf: Arc<dragon_ui::perf::PerfStats>,
 ) -> Option<Box<dyn Editor>> {
-    let mut state = EditorState::default();
-    state.meter.stats = perf;
+    let state = EditorState { meter: dragon_ui::perf::Meter::new(perf), ..Default::default() };
     create_egui_editor(
         egui_state,
         state,
@@ -276,12 +275,7 @@ fn draw(ui: &mut Ui, params: &DragonWaaveParams, setter: &ParamSetter, state: &m
                 egui::RichText::new("drag to change · shift for fine · double-click to reset").color(theme::TEXT_DIM),
             );
             ui.add_space(16.0);
-            ui.label(egui::RichText::new(state.meter.text()).small().monospace().color(theme::TEXT_DIM))
-                .on_hover_text(
-                    "DSP: share of each audio buffer's time the synth used (over 100 % = a dropout).\n\
-                     GUI: time to build one editor frame (drawing on the GPU comes after).\n\
-                     Peaks are held for a second.",
-                );
+            state.meter.show(ui, "the synth");
         });
     });
 

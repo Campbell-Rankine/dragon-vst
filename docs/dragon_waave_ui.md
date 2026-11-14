@@ -220,7 +220,8 @@ DRAGON WAAVE                                    [HQ] [CLIP]   drag · shift fine
 - **Load meter (header, right):** `DSP a% max b% · GUI c ms max d`, the
   synth's share of each audio buffer and the editor's frame time, with
   peaks held for a second. Hover for an explanation. See
-  [dragon_waave_perf.md](dragon_waave_perf.md#reading-the-meter).
+  [dragon_waave_perf.md](dragon_waave_perf.md#reading-the-meter). It's
+  `dragon_ui::perf`, shared with Dragon Pump.
 - **PRESET picker (added with the presets):** in the header, `PRESET ◀
   [Category: Name ▾] ▶`.
   - The dropdown lists the presets grouped under peach category headings.

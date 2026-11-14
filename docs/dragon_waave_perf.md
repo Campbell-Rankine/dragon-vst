@@ -138,7 +138,7 @@ measured it, and it turned out small (see [Results](#results)).
    - Check the audio thread (top functions) and the main thread (egui
      cost), to rule the GUI in or out.
 5. **DSP meter:** time each `process()` with `Instant` (no allocation) and
-   publish the load and peak via atomics (`vst/dragon_waave/src/perf.rs`).
+   publish the load and peak via atomics (now `crates/dragon-ui/src/perf.rs`, shared with Dragon Pump).
    The editor shows them in its header, with its own frame time. It's
    always on: two clock reads per call cost nothing measurable. It's the
    fastest way to see the problem in the real host.
